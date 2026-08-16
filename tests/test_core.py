@@ -14,6 +14,7 @@ from ts_forecast.evaluation import (
     compute_metrics,
     conformal_prediction_interval,
     forecast_bias,
+    mean_absolute_scaled_error,
 )
 from ts_forecast.models import seasonal_naive_forecast
 
@@ -75,6 +76,18 @@ def test_forecast_bias():
     y_pred = np.array([1.2, 2.2, 3.2])
     bias = forecast_bias(y_true, y_pred)
     assert pytest.approx(bias) == 0.2
+
+
+def test_mean_absolute_scaled_error_uses_seasonal_naive_scale():
+    score = mean_absolute_scaled_error(
+        [11.0, 13.0], [10.0, 15.0], [2.0, 4.0, 6.0, 8.0]
+    )
+    assert score == pytest.approx(0.75)
+
+
+def test_mean_absolute_scaled_error_rejects_constant_baseline():
+    with pytest.raises(ValueError, match="non-zero"):
+        mean_absolute_scaled_error([2.0], [1.0], [3.0, 3.0])
 
 
 def test_seasonal_naive_repeats_the_latest_season():

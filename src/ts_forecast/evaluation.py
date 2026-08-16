@@ -51,6 +51,29 @@ def forecast_bias(y_true, y_pred):
     return np.mean(y_pred - y_true)
 
 
+def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
+    """Return MASE using an in-sample seasonal-naive scaling error.
+
+    Unlike percentage errors, MASE remains defined when observations are zero
+    and is comparable across series. Values below one beat the corresponding
+    seasonal-naive forecast on average.
+    """
+
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be at least 1")
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    training = np.asarray(y_train, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if training.size <= seasonal_period:
+        raise ValueError("y_train must contain more than one seasonal period")
+    scale = np.mean(np.abs(training[seasonal_period:] - training[:-seasonal_period]))
+    if not np.isfinite(scale) or scale == 0:
+        raise ValueError("seasonal-naive training error must be finite and non-zero")
+    return float(np.mean(np.abs(observed - predicted)) / scale)
+
+
 def compare_models(results):
     comparisons = []
     for name, (y_true, y_pred) in results.items():
