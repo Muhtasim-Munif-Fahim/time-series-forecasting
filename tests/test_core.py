@@ -10,7 +10,11 @@ from ts_forecast.preprocessing import (
     train_test_split,
     drop_na_features,
 )
-from ts_forecast.evaluation import compute_metrics, forecast_bias
+from ts_forecast.evaluation import (
+    compute_metrics,
+    conformal_prediction_interval,
+    forecast_bias,
+)
 from ts_forecast.models import seasonal_naive_forecast
 
 
@@ -85,3 +89,30 @@ def test_seasonal_naive_requires_a_complete_season():
     frame = pd.DataFrame({"value": [1, 2]})
     with pytest.raises(ValueError, match="complete seasonal period"):
         seasonal_naive_forecast(frame, "value", seasonal_period=3)
+
+
+def test_conformal_interval_uses_finite_sample_residual_quantile():
+    lower, upper = conformal_prediction_interval(
+        calibration_true=[10, 20, 30, 40],
+        calibration_pred=[9, 18, 33, 40],
+        forecast=[50, 60],
+        coverage=0.8,
+    )
+    assert lower.tolist() == [47.0, 57.0]
+    assert upper.tolist() == [53.0, 63.0]
+
+
+def test_conformal_interval_ignores_nonfinite_calibration_pairs():
+    lower, upper = conformal_prediction_interval(
+        calibration_true=[1, np.nan, 3],
+        calibration_pred=[0, 2, 3],
+        forecast=[5],
+        coverage=0.5,
+    )
+    assert lower.tolist() == [4.0]
+    assert upper.tolist() == [6.0]
+
+
+def test_conformal_interval_validates_coverage():
+    with pytest.raises(ValueError, match="strictly between"):
+        conformal_prediction_interval([1], [1], [2], coverage=1.0)
