@@ -11,6 +11,7 @@ from ts_forecast.preprocessing import (
     drop_na_features,
 )
 from ts_forecast.evaluation import compute_metrics, forecast_bias
+from ts_forecast.models import seasonal_naive_forecast
 
 
 @pytest.fixture
@@ -70,3 +71,17 @@ def test_forecast_bias():
     y_pred = np.array([1.2, 2.2, 3.2])
     bias = forecast_bias(y_true, y_pred)
     assert pytest.approx(bias) == 0.2
+
+
+def test_seasonal_naive_repeats_the_latest_season():
+    frame = pd.DataFrame({"value": [1, 2, 3, 10, 20, 30]})
+    prediction = seasonal_naive_forecast(
+        frame, "value", steps=5, seasonal_period=3
+    )
+    assert prediction.tolist() == [10.0, 20.0, 30.0, 10.0, 20.0]
+
+
+def test_seasonal_naive_requires_a_complete_season():
+    frame = pd.DataFrame({"value": [1, 2]})
+    with pytest.raises(ValueError, match="complete seasonal period"):
+        seasonal_naive_forecast(frame, "value", seasonal_period=3)

@@ -6,6 +6,22 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
 
+def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):
+    """Repeat the most recent observed season for the requested horizon."""
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be at least 1")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if len(values) < seasonal_period:
+        raise ValueError(
+            "training data must contain at least one complete seasonal period"
+        )
+    season = values[-seasonal_period:]
+    return np.resize(season, steps)
+
+
 def forecast_arima(train, target_col, order=(1, 1, 1), steps=1):
     model = ARIMA(train[target_col].dropna(), order=order)
     fitted = model.fit()
