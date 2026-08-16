@@ -48,3 +48,59 @@ def walk_forward_validation(model_fn, df, target_col, window=30, steps=1):
         predictions.append(pred)
         actuals.append(actual)
     return np.array(actuals), np.array(predictions)
+
+
+def rolling_origin_backtest(
+    model_fn,
+    df,
+    target_col,
+    *,
+    initial_window,
+    horizon=1,
+    step=1,
+    window=None,
+):
+    """Evaluate a forecasting callable over reproducible rolling origins.
+
+    ``model_fn`` receives ``(training_frame, target_col, steps=horizon)``.
+    By default the training set expands; setting ``window`` keeps only the most
+    recent observations at each origin. The tidy result preserves timestamps
+    and horizon numbers for horizon-specific analysis.
+    """
+
+    if target_col not in df:
+        raise KeyError(f"unknown target column: {target_col}")
+    if initial_window < 1 or horizon < 1 or step < 1:
+        raise ValueError("initial_window, horizon, and step must be at least 1")
+    if window is not None and window < 1:
+        raise ValueError("window must be at least 1 when provided")
+    if initial_window + horizon > len(df):
+        raise ValueError("not enough observations for one backtest fold")
+
+    records = []
+    fold = 0
+    for origin in range(initial_window, len(df) - horizon + 1, step):
+        start = 0 if window is None else max(0, origin - window)
+        train = df.iloc[start:origin]
+        prediction = np.asarray(
+            model_fn(train, target_col, steps=horizon), dtype=float
+        ).ravel()
+        if prediction.size != horizon:
+            raise ValueError("model_fn must return exactly horizon predictions")
+        actual = np.asarray(df.iloc[origin : origin + horizon][target_col], dtype=float)
+        timestamps = df.index[origin : origin + horizon]
+        fold += 1
+        for offset, (timestamp, observed, predicted) in enumerate(
+            zip(timestamps, actual, prediction), start=1
+        ):
+            records.append(
+                {
+                    "fold": fold,
+                    "origin": df.index[origin - 1],
+                    "timestamp": timestamp,
+                    "horizon": offset,
+                    "actual": float(observed),
+                    "prediction": float(predicted),
+                }
+            )
+    return pd.DataFrame.from_records(records)

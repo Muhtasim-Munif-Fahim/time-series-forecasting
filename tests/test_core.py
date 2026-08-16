@@ -16,7 +16,7 @@ from ts_forecast.evaluation import (
     forecast_bias,
     mean_absolute_scaled_error,
 )
-from ts_forecast.models import seasonal_naive_forecast
+from ts_forecast.models import rolling_origin_backtest, seasonal_naive_forecast
 
 
 @pytest.fixture
@@ -102,6 +102,37 @@ def test_seasonal_naive_requires_a_complete_season():
     frame = pd.DataFrame({"value": [1, 2]})
     with pytest.raises(ValueError, match="complete seasonal period"):
         seasonal_naive_forecast(frame, "value", seasonal_period=3)
+
+
+def test_rolling_origin_backtest_returns_tidy_horizon_rows():
+    frame = pd.DataFrame(
+        {"value": [1, 2, 3, 4, 5, 6]},
+        index=pd.date_range("2024-01-01", periods=6, freq="D"),
+    )
+
+    def repeat_last(train, target_col, steps):
+        return np.repeat(train[target_col].iloc[-1], steps)
+
+    result = rolling_origin_backtest(
+        repeat_last, frame, "value", initial_window=3, horizon=2, step=1
+    )
+    assert result[["fold", "horizon"]].values.tolist() == [
+        [1, 1], [1, 2], [2, 1], [2, 2]
+    ]
+    assert result["prediction"].tolist() == [3.0, 3.0, 4.0, 4.0]
+    assert result["actual"].tolist() == [4.0, 5.0, 5.0, 6.0]
+
+
+def test_rolling_origin_backtest_validates_prediction_length():
+    frame = pd.DataFrame({"value": [1, 2, 3, 4]})
+    with pytest.raises(ValueError, match="exactly horizon"):
+        rolling_origin_backtest(
+            lambda train, target_col, steps: [1],
+            frame,
+            "value",
+            initial_window=2,
+            horizon=2,
+        )
 
 
 def test_conformal_interval_uses_finite_sample_residual_quantile():
