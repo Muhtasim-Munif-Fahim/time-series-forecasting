@@ -14,6 +14,7 @@ from ts_forecast.evaluation import (
     compute_metrics,
     conformal_prediction_interval,
     forecast_bias,
+    interval_metrics,
     mean_absolute_scaled_error,
 )
 from ts_forecast.models import rolling_origin_backtest, seasonal_naive_forecast
@@ -88,6 +89,20 @@ def test_mean_absolute_scaled_error_uses_seasonal_naive_scale():
 def test_mean_absolute_scaled_error_rejects_constant_baseline():
     with pytest.raises(ValueError, match="non-zero"):
         mean_absolute_scaled_error([2.0], [1.0], [3.0, 3.0])
+
+
+def test_interval_metrics_penalize_missed_intervals():
+    metrics = interval_metrics(
+        y_true=[1.0, 5.0], lower=[0.0, 2.0], upper=[2.0, 4.0], coverage=0.8
+    )
+    assert metrics["coverage"] == 0.5
+    assert metrics["mean_width"] == 2.0
+    assert metrics["winkler_score"] == pytest.approx(7.0)
+
+
+def test_interval_metrics_reject_inverted_bounds():
+    with pytest.raises(ValueError, match="must not exceed"):
+        interval_metrics([1.0], [2.0], [0.0])
 
 
 def test_seasonal_naive_repeats_the_latest_season():

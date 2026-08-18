@@ -74,6 +74,37 @@ def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
     return float(np.mean(np.abs(observed - predicted)) / scale)
 
 
+def interval_metrics(y_true, lower, upper, coverage=0.9):
+    """Evaluate prediction intervals with coverage, width, and Winkler score."""
+
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    observed = np.asarray(y_true, dtype=float).ravel()
+    low = np.asarray(lower, dtype=float).ravel()
+    high = np.asarray(upper, dtype=float).ravel()
+    if not (observed.shape == low.shape == high.shape):
+        raise ValueError("y_true, lower, and upper must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one interval is required")
+    if np.any(low > high):
+        raise ValueError("lower bounds must not exceed upper bounds")
+    if not np.all(np.isfinite(np.concatenate([observed, low, high]))):
+        raise ValueError("interval inputs must contain only finite values")
+
+    width = high - low
+    alpha = 1.0 - coverage
+    winkler = width.copy()
+    below = observed < low
+    above = observed > high
+    winkler[below] += (2.0 / alpha) * (low[below] - observed[below])
+    winkler[above] += (2.0 / alpha) * (observed[above] - high[above])
+    return {
+        "coverage": float(np.mean((observed >= low) & (observed <= high))),
+        "mean_width": float(np.mean(width)),
+        "winkler_score": float(np.mean(winkler)),
+    }
+
+
 def compare_models(results):
     comparisons = []
     for name, (y_true, y_pred) in results.items():
