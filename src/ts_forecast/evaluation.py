@@ -105,6 +105,37 @@ def interval_metrics(y_true, lower, upper, coverage=0.9):
     }
 
 
+def summarize_backtest(results):
+    """Summarize tidy rolling-origin predictions for each forecast horizon."""
+
+    if not isinstance(results, pd.DataFrame):
+        raise TypeError("results must be a pandas.DataFrame")
+    required = {"horizon", "actual", "prediction"}
+    missing = sorted(required - set(results.columns))
+    if missing:
+        raise ValueError(f"backtest results missing columns: {', '.join(missing)}")
+    if results.empty:
+        return pd.DataFrame(columns=["count", "mae", "rmse", "bias"]).rename_axis(
+            "horizon"
+        )
+
+    rows = []
+    for horizon, group in results.groupby("horizon", sort=True):
+        actual = group["actual"].to_numpy(dtype=float)
+        prediction = group["prediction"].to_numpy(dtype=float)
+        residual = prediction - actual
+        rows.append(
+            {
+                "horizon": horizon,
+                "count": int(len(group)),
+                "mae": float(np.mean(np.abs(residual))),
+                "rmse": float(np.sqrt(np.mean(residual**2))),
+                "bias": float(np.mean(residual)),
+            }
+        )
+    return pd.DataFrame(rows).set_index("horizon")
+
+
 def compare_models(results):
     comparisons = []
     for name, (y_true, y_pred) in results.items():

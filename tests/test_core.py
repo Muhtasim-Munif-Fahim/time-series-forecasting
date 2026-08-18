@@ -16,6 +16,7 @@ from ts_forecast.evaluation import (
     forecast_bias,
     interval_metrics,
     mean_absolute_scaled_error,
+    summarize_backtest,
 )
 from ts_forecast.models import rolling_origin_backtest, seasonal_naive_forecast
 
@@ -148,6 +149,26 @@ def test_rolling_origin_backtest_validates_prediction_length():
             initial_window=2,
             horizon=2,
         )
+
+
+def test_summarize_backtest_reports_horizon_specific_error():
+    results = pd.DataFrame(
+        {
+            "horizon": [1, 2, 1, 2],
+            "actual": [10.0, 20.0, 12.0, 22.0],
+            "prediction": [11.0, 18.0, 11.0, 25.0],
+        }
+    )
+    summary = summarize_backtest(results)
+    assert summary.loc[1, "count"] == 2
+    assert summary.loc[1, "mae"] == 1.0
+    assert summary.loc[1, "bias"] == 0.0
+    assert summary.loc[2, "rmse"] == pytest.approx(np.sqrt(6.5))
+
+
+def test_summarize_backtest_validates_tidy_schema():
+    with pytest.raises(ValueError, match="missing columns"):
+        summarize_backtest(pd.DataFrame({"actual": [1.0]}))
 
 
 def test_conformal_interval_uses_finite_sample_residual_quantile():
