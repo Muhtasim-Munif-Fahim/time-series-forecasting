@@ -6,6 +6,46 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
 
+def ensemble_forecast(forecasts, weights=None):
+    """Blend same-horizon forecasts with optional non-negative weights.
+
+    Parameters
+    ----------
+    forecasts : sequence of array-like
+        Point forecasts from two or more models. Every forecast must have the
+        same horizon.
+    weights : sequence of float, optional
+        Relative model weights. They are normalized internally, so their sum
+        need not equal one.
+    """
+
+    if forecasts is None:
+        raise ValueError("at least one forecast is required")
+    forecasts = list(forecasts)
+    if not forecasts:
+        raise ValueError("at least one forecast is required")
+    arrays = [np.asarray(forecast, dtype=float).ravel() for forecast in forecasts]
+    if any(array.size == 0 for array in arrays):
+        raise ValueError("forecasts must not be empty")
+    if len({array.size for array in arrays}) != 1:
+        raise ValueError("all forecasts must have the same horizon")
+    if not all(np.all(np.isfinite(array)) for array in arrays):
+        raise ValueError("forecasts must contain only finite values")
+
+    if weights is None:
+        normalized = np.ones(len(arrays), dtype=float)
+    else:
+        normalized = np.asarray(weights, dtype=float).ravel()
+        if normalized.size != len(arrays):
+            raise ValueError("weights must match the number of forecasts")
+        if not np.all(np.isfinite(normalized)) or np.any(normalized < 0):
+            raise ValueError("weights must be finite and non-negative")
+        if normalized.sum() <= 0:
+            raise ValueError("at least one weight must be positive")
+
+    return np.average(np.vstack(arrays), axis=0, weights=normalized)
+
+
 def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):
     """Repeat the most recent observed season for the requested horizon."""
 

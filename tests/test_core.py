@@ -18,7 +18,7 @@ from ts_forecast.evaluation import (
     mean_absolute_scaled_error,
     summarize_backtest,
 )
-from ts_forecast.models import rolling_origin_backtest, seasonal_naive_forecast
+from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
 
 
 @pytest.fixture
@@ -118,6 +118,18 @@ def test_seasonal_naive_requires_a_complete_season():
     frame = pd.DataFrame({"value": [1, 2]})
     with pytest.raises(ValueError, match="complete seasonal period"):
         seasonal_naive_forecast(frame, "value", seasonal_period=3)
+
+
+def test_ensemble_forecast_normalizes_model_weights():
+    result = ensemble_forecast([[10.0, 20.0], [14.0, 10.0]], weights=[3, 1])
+    assert result.tolist() == [11.0, 17.5]
+
+
+def test_ensemble_forecast_validates_horizons_and_weights():
+    with pytest.raises(ValueError, match="same horizon"):
+        ensemble_forecast([[1.0], [1.0, 2.0]])
+    with pytest.raises(ValueError, match="non-negative"):
+        ensemble_forecast([[1.0], [2.0]], weights=[1, -1])
 
 
 def test_rolling_origin_backtest_returns_tidy_horizon_rows():
