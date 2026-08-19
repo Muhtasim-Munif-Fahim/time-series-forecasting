@@ -163,6 +163,43 @@ def test_rolling_origin_backtest_validates_prediction_length():
         )
 
 
+def test_rolling_origin_backtest_gap_excludes_recent_observations():
+    frame = pd.DataFrame(
+        {"value": [1, 2, 3, 4, 5, 6, 7]},
+        index=pd.date_range("2024-01-01", periods=7, freq="D"),
+    )
+    seen = []
+
+    def remember_last(train, target_col, steps):
+        seen.append(train[target_col].tolist())
+        return [train[target_col].iloc[-1]] * steps
+
+    result = rolling_origin_backtest(
+        remember_last,
+        frame,
+        "value",
+        initial_window=3,
+        gap=2,
+        horizon=1,
+        step=1,
+    )
+
+    assert seen[0] == [1, 2, 3]
+    assert result["actual"].tolist() == [6, 7]
+    assert result["origin"].iloc[0] == frame.index[2]
+
+
+def test_rolling_origin_backtest_rejects_negative_gap():
+    with pytest.raises(ValueError, match="non-negative"):
+        rolling_origin_backtest(
+            lambda train, target_col, steps: [1],
+            pd.DataFrame({"value": [1, 2, 3]}),
+            "value",
+            initial_window=1,
+            gap=-1,
+        )
+
+
 def test_summarize_backtest_reports_horizon_specific_error():
     results = pd.DataFrame(
         {
