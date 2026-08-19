@@ -16,6 +16,7 @@ from ts_forecast.evaluation import (
     forecast_bias,
     interval_metrics,
     mean_absolute_scaled_error,
+    summarize_interval_backtest,
     summarize_backtest,
 )
 from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
@@ -255,6 +256,29 @@ def test_summarize_backtest_reports_horizon_specific_error():
 def test_summarize_backtest_validates_tidy_schema():
     with pytest.raises(ValueError, match="missing columns"):
         summarize_backtest(pd.DataFrame({"actual": [1.0]}))
+
+
+def test_summarize_interval_backtest_reports_horizon_specific_coverage():
+    results = pd.DataFrame(
+        {
+            "horizon": [1, 1, 2, 2],
+            "actual": [1.0, 5.0, 2.0, 8.0],
+            "lower": [0.0, 4.0, 1.0, 5.0],
+            "upper": [2.0, 6.0, 3.0, 7.0],
+        }
+    )
+
+    summary = summarize_interval_backtest(results, coverage=0.8)
+
+    assert summary.loc[1, "count"] == 2
+    assert summary.loc[1, "coverage"] == 1.0
+    assert summary.loc[2, "coverage"] == 0.5
+    assert summary.loc[2, "mean_width"] == 2.0
+
+
+def test_summarize_interval_backtest_validates_schema():
+    with pytest.raises(ValueError, match="missing columns"):
+        summarize_interval_backtest(pd.DataFrame({"horizon": [1], "actual": [1.0]}))
 
 
 def test_conformal_interval_uses_finite_sample_residual_quantile():

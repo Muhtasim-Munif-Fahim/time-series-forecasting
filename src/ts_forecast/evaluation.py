@@ -136,6 +136,43 @@ def summarize_backtest(results):
     return pd.DataFrame(rows).set_index("horizon")
 
 
+def summarize_interval_backtest(results, coverage=0.9):
+    """Summarize rolling-origin interval coverage separately by horizon.
+
+    ``results`` must contain ``horizon``, ``actual``, ``lower``, and ``upper``
+    columns. The output combines count, empirical coverage, mean width, and
+    Winkler score so interval degradation at longer horizons is visible.
+    """
+
+    if not isinstance(results, pd.DataFrame):
+        raise TypeError("results must be a pandas.DataFrame")
+    required = {"horizon", "actual", "lower", "upper"}
+    missing = sorted(required - set(results.columns))
+    if missing:
+        raise ValueError(
+            f"interval backtest results missing columns: {', '.join(missing)}"
+        )
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    columns = ["count", "coverage", "mean_width", "winkler_score"]
+    if results.empty:
+        return pd.DataFrame(columns=columns).rename_axis("horizon")
+
+    rows = []
+    for horizon, group in results.groupby("horizon", sort=True):
+        metrics = interval_metrics(
+            group["actual"], group["lower"], group["upper"], coverage=coverage
+        )
+        rows.append(
+            {
+                "horizon": horizon,
+                "count": int(len(group)),
+                **metrics,
+            }
+        )
+    return pd.DataFrame(rows).set_index("horizon")[columns]
+
+
 def compare_models(results):
     comparisons = []
     for name, (y_true, y_pred) in results.items():
