@@ -19,6 +19,7 @@ from ts_forecast.evaluation import (
     summarize_backtest,
 )
 from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
+from ts_forecast.tuning import select_model_by_backtest
 
 
 @pytest.fixture
@@ -197,6 +198,42 @@ def test_rolling_origin_backtest_rejects_negative_gap():
             "value",
             initial_window=1,
             gap=-1,
+        )
+
+
+def test_select_model_by_backtest_returns_reproducible_score_table():
+    frame = pd.DataFrame({"value": np.arange(1.0, 11.0)})
+
+    def perfect_ramp(train, target_col, steps):
+        last = train[target_col].iloc[-1]
+        return np.arange(last + 1, last + steps + 1)
+
+    def repeat_last(train, target_col, steps):
+        return np.repeat(train[target_col].iloc[-1], steps)
+
+    winner, scores = select_model_by_backtest(
+        {"ramp": perfect_ramp, "last": repeat_last},
+        frame,
+        "value",
+        initial_window=4,
+        horizon=2,
+    )
+
+    assert winner == "ramp"
+    assert scores.loc["ramp", "rmse"] == pytest.approx(0.0)
+    assert scores.loc["last", "predictions"] == 10
+    assert list(scores.index) == ["ramp", "last"]
+
+
+def test_select_model_by_backtest_validates_metric():
+    frame = pd.DataFrame({"value": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match="metric"):
+        select_model_by_backtest(
+            {"model": lambda train, target_col, steps: [1]},
+            frame,
+            "value",
+            initial_window=1,
+            metric="bias",
         )
 
 
