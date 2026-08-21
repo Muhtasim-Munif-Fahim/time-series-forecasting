@@ -18,6 +18,8 @@ from ts_forecast.evaluation import (
     mean_absolute_scaled_error,
     summarize_interval_backtest,
     summarize_backtest,
+    quantile_loss,
+    residual_autocorrelation,
 )
 from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
 from ts_forecast.tuning import select_model_by_backtest
@@ -306,3 +308,35 @@ def test_conformal_interval_ignores_nonfinite_calibration_pairs():
 def test_conformal_interval_validates_coverage():
     with pytest.raises(ValueError, match="strictly between"):
         conformal_prediction_interval([1], [1], [2], coverage=1.0)
+
+class TestQuantileLoss:
+    def test_perfect_median_forecast_scores_zero(self):
+        y = np.array([1.0, 2.0, 3.0])
+        forecasts = np.column_stack(
+            [y, y, y]
+        )  # quantiles 0.1, 0.5, 0.9 all equal to truth
+        result = quantile_loss(y, forecasts, quantiles=(0.1, 0.5, 0.9))
+        assert result["pinball_loss"] == 0.0
+        assert result["per_quantile"]["q50"] == 0.0
+
+    def test_pinball_loss_is_asymmetric(self):
+        y = np.array([0.0, 0.0])
+        forecasts = np.column_stack([np.array([1.0, 1.0]), np.array([1.0, 1.0])])
+        result = quantile_loss(y, forecasts, quantiles=(0.1, 0.9))
+        # Over-forecasting is penalised more at low quantiles.
+        assert result["per_quantile"]["q10"] > result["per_quantile"]["q90"]
+
+    def test_accepts_dict_forecasts(self):
+        y = np.array([1.0, 2.0])
+        result = quantile_loss(y, {"0.5": [1.0, 2.0]})
+        assert result["per_quantile"]["q50"] == 0.0
+
+    def test_rejects_invalid_quantiles(self):
+        with pytest.raises(ValueError, match="quantiles"):
+            quantile_loss([1.0], [[1.0, 1.0]], quantiles=(0.0, 0.5))
+
+    def test_rejects_shape_mismatch(self):
+        with pytest.raises(ValueError, match="equal"):
+            quantile_loss([1.0, 2.0], [[1.0, 1.0, 1.0]])
+
+

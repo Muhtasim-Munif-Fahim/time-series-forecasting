@@ -51,6 +51,37 @@ def forecast_bias(y_true, y_pred):
     return np.mean(y_pred - y_true)
 
 
+def residual_autocorrelation(y_true, y_pred, max_lag=1):
+    """Measure remaining serial correlation in one-step forecast errors.
+
+    A lag-one autocorrelation close to zero means the errors look like noise;
+    strong positive correlation signals that the model still leaves
+    exploitable structure on the table. Returns per-lag correlation values.
+    """
+
+    if max_lag < 1:
+        raise ValueError("max_lag must be at least 1")
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size <= max_lag + 1:
+        raise ValueError("need more observations than max_lag to estimate autocorrelation")
+
+    residual = observed - predicted
+    centered = residual - residual.mean()
+    denominator = np.dot(centered, centered)
+    if not np.isfinite(denominator) or denominator == 0:
+        raise ValueError("residuals must have non-zero variance")
+
+    lags = np.arange(1, max_lag + 1)
+    values = []
+    for lag in lags:
+        numerator = np.dot(centered[lag:], centered[:-lag])
+        values.append(float(numerator / denominator))
+    return {f"lag_{int(lag)}": value for lag, value in zip(lags, values)}
+
+
 def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
     """Return MASE using an in-sample seasonal-naive scaling error.
 
@@ -103,6 +134,55 @@ def interval_metrics(y_true, lower, upper, coverage=0.9):
         "mean_width": float(np.mean(width)),
         "winkler_score": float(np.mean(winkler)),
     }
+
+
+def quantile_loss(y_true, forecasts, quantiles=None):
+    """Score quantile forecasts with the pinball loss.
+
+    ``forecasts`` may be a 2-D array (rows = horizons, columns = quantiles)
+    or a mapping from quantile to a 1-D forecast. The pinball loss is the
+    standard proper scoring rule for probabilistic point forecasts: it is
+    asymmetric, penalising under-forecasts more at high quantiles and
+    over-forecasts more at low quantiles. Lower is better.
+    """
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    if quantiles is None:
+        quantiles = (0.1, 0.5, 0.9)
+
+    if isinstance(forecasts, dict):
+        labels = sorted(forecasts)
+        matrix = np.column_stack([np.asarray(forecasts[q], dtype=float).ravel() for q in labels])
+        effective_quantiles = [float(q) for q in labels]
+    else:
+        matrix = np.asarray(forecasts, dtype=float)
+        if matrix.ndim != 2:
+            raise ValueError("forecasts must be 2-D (horizons x quantiles) or a dict")
+        if matrix.shape[1] != len(quantiles):
+            raise ValueError(
+                f"expected {len(quantiles)} quantile columns, got {matrix.shape[1]}"
+            )
+        effective_quantiles = [float(q) for q in quantiles]
+
+    if not all(0.0 < q < 1.0 for q in effective_quantiles):
+        raise ValueError("quantiles must be strictly between 0 and 1")
+    if matrix.shape[0] != observed.size:
+        raise ValueError("y_true and forecasts must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one forecast is required")
+
+    residuals = observed[:, None] - matrix
+    losses = np.where(
+        residuals >= 0,
+        np.asarray(effective_quantiles) * residuals,
+        (np.asarray(effective_quantiles) - 1.0) * residuals,
+    )
+    mean_loss = float(np.mean(losses))
+    per_quantile = {
+        f"q{int(round(q * 100)):02d}": float(losses[:, i].mean())
+        for i, q in enumerate(effective_quantiles)
+    }
+    return {"pinball_loss": mean_loss, "per_quantile": per_quantile}
 
 
 def summarize_backtest(results):
