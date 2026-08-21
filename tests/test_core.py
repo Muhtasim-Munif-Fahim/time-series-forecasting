@@ -340,3 +340,29 @@ class TestQuantileLoss:
             quantile_loss([1.0, 2.0], [[1.0, 1.0, 1.0]])
 
 
+class TestResidualAutocorrelation:
+    def test_zero_for_iid_noise(self):
+        rng = np.random.default_rng(42)
+        residual = rng.normal(size=200)
+        y_true = residual
+        y_pred = np.zeros_like(residual)
+        result = residual_autocorrelation(y_true, y_pred, max_lag=1)
+        assert abs(result["lag_1"]) < 0.2
+
+    def test_strong_positive_for_trend_errors(self):
+        # Errors that climb steadily have lag-one autocorrelation near one.
+        y_true = np.arange(1.0, 11.0)
+        y_pred = np.full(10, 1.0)
+        result = residual_autocorrelation(y_true, y_pred, max_lag=1)
+        assert result["lag_1"] > 0.5
+
+    def test_reports_multiple_lags(self):
+        y_true = np.arange(1.0, 21.0)
+        y_pred = np.full(20, 1.0)
+        result = residual_autocorrelation(y_true, y_pred, max_lag=3)
+        assert set(result) == {"lag_1", "lag_2", "lag_3"}
+
+    def test_rejects_constant_residuals(self):
+        with pytest.raises(ValueError, match="variance"):
+            residual_autocorrelation([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+
