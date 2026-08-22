@@ -136,6 +136,16 @@ def test_ensemble_forecast_validates_horizons_and_weights():
         ensemble_forecast([[1.0], [2.0]], weights=[1, -1])
 
 
+def test_ensemble_forecast_can_use_robust_median_aggregation():
+    result = ensemble_forecast(
+        [[10.0, 20.0], [12.0, 22.0], [1000.0, -1000.0]], method="median"
+    )
+    assert result.tolist() == [12.0, 20.0]
+
+    with pytest.raises(ValueError, match="not supported"):
+        ensemble_forecast([[1.0], [2.0]], weights=[1, 1], method="median")
+
+
 def test_rolling_origin_backtest_returns_tidy_horizon_rows():
     frame = pd.DataFrame(
         {"value": [1, 2, 3, 4, 5, 6]},

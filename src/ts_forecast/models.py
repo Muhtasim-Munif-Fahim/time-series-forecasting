@@ -6,8 +6,8 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
 
-def ensemble_forecast(forecasts, weights=None):
-    """Blend same-horizon forecasts with optional non-negative weights.
+def ensemble_forecast(forecasts, weights=None, method="mean"):
+    """Blend same-horizon forecasts with mean or median aggregation.
 
     Parameters
     ----------
@@ -17,6 +17,9 @@ def ensemble_forecast(forecasts, weights=None):
     weights : sequence of float, optional
         Relative model weights. They are normalized internally, so their sum
         need not equal one.
+    method : {"mean", "median"}
+        Aggregation strategy. Median aggregation is robust to one anomalous
+        model forecast and does not accept weights.
     """
 
     if forecasts is None:
@@ -31,6 +34,13 @@ def ensemble_forecast(forecasts, weights=None):
         raise ValueError("all forecasts must have the same horizon")
     if not all(np.all(np.isfinite(array)) for array in arrays):
         raise ValueError("forecasts must contain only finite values")
+
+    if method not in {"mean", "median"}:
+        raise ValueError("method must be 'mean' or 'median'")
+    if method == "median":
+        if weights is not None:
+            raise ValueError("weights are not supported with median aggregation")
+        return np.median(np.vstack(arrays), axis=0)
 
     if weights is None:
         normalized = np.ones(len(arrays), dtype=float)
