@@ -15,6 +15,7 @@ from ts_forecast.evaluation import (
     conformal_prediction_interval,
     forecast_bias,
     interval_metrics,
+    interval_calibration_curve,
     mean_absolute_scaled_error,
     root_mean_squared_scaled_error,
     summarize_interval_backtest,
@@ -116,6 +117,18 @@ def test_interval_metrics_penalize_missed_intervals():
 def test_interval_metrics_reject_inverted_bounds():
     with pytest.raises(ValueError, match="must not exceed"):
         interval_metrics([1.0], [2.0], [0.0])
+
+
+def test_interval_calibration_curve_compares_multiple_nominal_levels():
+    curve = interval_calibration_curve(
+        [1.0, 2.0],
+        {
+            0.9: ([0.0, 0.0], [3.0, 3.0]),
+            0.5: ([0.5, 1.5], [1.5, 2.5]),
+        },
+    )
+    assert curve["nominal_coverage"].tolist() == [0.5, 0.9]
+    assert curve["empirical_coverage"].tolist() == [1.0, 1.0]
 
 
 def test_seasonal_naive_repeats_the_latest_season():

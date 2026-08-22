@@ -158,6 +158,33 @@ def interval_metrics(y_true, lower, upper, coverage=0.9):
     }
 
 
+def interval_calibration_curve(y_true, intervals):
+    """Compare nominal and empirical coverage across multiple interval levels.
+
+    ``intervals`` maps each nominal coverage level to a ``(lower, upper)``
+    pair. The returned table is sorted by nominal coverage for direct plotting.
+    """
+
+    if not isinstance(intervals, dict) or not intervals:
+        raise ValueError("intervals must be a non-empty mapping of coverage levels")
+    rows = []
+    for nominal, bounds in intervals.items():
+        try:
+            coverage = float(nominal)
+            lower, upper = bounds
+        except (TypeError, ValueError) as exc:
+            raise ValueError("each interval must be a (lower, upper) pair") from exc
+        metrics = interval_metrics(y_true, lower, upper, coverage=coverage)
+        rows.append(
+            {
+                "nominal_coverage": coverage,
+                "empirical_coverage": metrics["coverage"],
+                "mean_width": metrics["mean_width"],
+            }
+        )
+    return pd.DataFrame(rows).sort_values("nominal_coverage").reset_index(drop=True)
+
+
 def quantile_loss(y_true, forecasts, quantiles=None):
     """Score quantile forecasts with the pinball loss.
 
