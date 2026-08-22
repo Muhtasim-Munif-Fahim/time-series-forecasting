@@ -110,6 +110,7 @@ def rolling_origin_backtest(
     step=1,
     window=None,
     gap=0,
+    max_folds=None,
 ):
     """Evaluate a forecasting callable over reproducible rolling origins.
 
@@ -129,6 +130,10 @@ def rolling_origin_backtest(
         raise ValueError("gap must be non-negative")
     if window is not None and window < 1:
         raise ValueError("window must be at least 1 when provided")
+    if max_folds is not None and (
+        isinstance(max_folds, bool) or not isinstance(max_folds, int) or max_folds < 1
+    ):
+        raise ValueError("max_folds must be a positive integer or None")
     if initial_window + gap + horizon > len(df):
         raise ValueError("not enough observations for one backtest fold")
 
@@ -136,6 +141,8 @@ def rolling_origin_backtest(
     fold = 0
     first_origin = initial_window + gap
     for origin in range(first_origin, len(df) - horizon + 1, step):
+        if max_folds is not None and fold >= max_folds:
+            break
         train_end = origin - gap
         start = 0 if window is None else max(0, train_end - window)
         train = df.iloc[start:train_end]

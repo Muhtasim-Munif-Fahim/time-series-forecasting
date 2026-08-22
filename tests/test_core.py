@@ -235,6 +235,23 @@ def test_rolling_origin_backtest_rejects_negative_gap():
         )
 
 
+def test_rolling_origin_backtest_can_bound_evaluation_folds():
+    frame = pd.DataFrame({"value": [1, 2, 3, 4, 5, 6]})
+    result = rolling_origin_backtest(
+        lambda train, target_col, steps: [train[target_col].iloc[-1]],
+        frame,
+        "value",
+        initial_window=3,
+        max_folds=2,
+    )
+    assert result["fold"].tolist() == [1, 2]
+
+    with pytest.raises(ValueError, match="max_folds"):
+        rolling_origin_backtest(
+            lambda train, target_col, steps: [1], frame, "value", initial_window=3, max_folds=0
+        )
+
+
 def test_select_model_by_backtest_returns_reproducible_score_table():
     frame = pd.DataFrame({"value": np.arange(1.0, 11.0)})
 
