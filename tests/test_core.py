@@ -16,6 +16,7 @@ from ts_forecast.evaluation import (
     forecast_bias,
     interval_metrics,
     mean_absolute_scaled_error,
+    root_mean_squared_scaled_error,
     summarize_interval_backtest,
     summarize_backtest,
     quantile_loss,
@@ -94,6 +95,13 @@ def test_mean_absolute_scaled_error_uses_seasonal_naive_scale():
 def test_mean_absolute_scaled_error_rejects_constant_baseline():
     with pytest.raises(ValueError, match="non-zero"):
         mean_absolute_scaled_error([2.0], [1.0], [3.0, 3.0])
+
+
+def test_root_mean_squared_scaled_error_uses_seasonal_naive_scale():
+    score = root_mean_squared_scaled_error(
+        [11.0, 13.0], [10.0, 15.0], [2.0, 4.0, 6.0, 8.0]
+    )
+    assert score == pytest.approx(np.sqrt(2.5 / 4.0))
 
 
 def test_interval_metrics_penalize_missed_intervals():
