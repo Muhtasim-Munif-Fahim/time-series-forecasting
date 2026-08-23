@@ -14,6 +14,7 @@ from ts_forecast.evaluation import (
     compute_metrics,
     conformal_prediction_interval,
     forecast_bias,
+    symmetric_mean_absolute_percentage_error,
     interval_metrics,
     interval_calibration_curve,
     mean_absolute_scaled_error,
@@ -84,6 +85,11 @@ def test_forecast_bias():
     y_pred = np.array([1.2, 2.2, 3.2])
     bias = forecast_bias(y_true, y_pred)
     assert pytest.approx(bias) == 0.2
+
+
+def test_symmetric_mape_handles_zero_observations_without_division_errors():
+    score = symmetric_mean_absolute_percentage_error([0.0, 10.0], [0.0, 20.0])
+    assert score == pytest.approx(100 / 3)
 
 
 def test_mean_absolute_scaled_error_uses_seasonal_naive_scale():

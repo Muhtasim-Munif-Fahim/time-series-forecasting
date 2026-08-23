@@ -51,6 +51,27 @@ def forecast_bias(y_true, y_pred):
     return np.mean(y_pred - y_true)
 
 
+def symmetric_mean_absolute_percentage_error(y_true, y_pred):
+    """Return sMAPE as a percentage while handling jointly-zero observations."""
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one forecast is required")
+    if not np.all(np.isfinite(np.concatenate([observed, predicted]))):
+        raise ValueError("y_true and y_pred must contain only finite values")
+    denominator = np.abs(observed) + np.abs(predicted)
+    terms = np.divide(
+        2.0 * np.abs(predicted - observed),
+        denominator,
+        out=np.zeros_like(denominator),
+        where=denominator != 0,
+    )
+    return float(np.mean(terms) * 100)
+
+
 def residual_autocorrelation(y_true, y_pred, max_lag=1):
     """Measure remaining serial correlation in one-step forecast errors.
 
