@@ -274,6 +274,23 @@ def test_rolling_origin_backtest_can_bound_evaluation_folds():
         )
 
 
+def test_rolling_origin_backtest_can_evaluate_selected_origins_only():
+    frame = pd.DataFrame({"value": [1, 2, 3, 4, 5, 6, 7]})
+    result = rolling_origin_backtest(
+        lambda train, target_col, steps: [train[target_col].iloc[-1]],
+        frame,
+        "value",
+        initial_window=3,
+        origins=[3, 5],
+    )
+    assert result["actual"].tolist() == [4.0, 6.0]
+
+    with pytest.raises(ValueError, match="unique and sorted"):
+        rolling_origin_backtest(
+            lambda train, target_col, steps: [1], frame, "value", initial_window=3, origins=[5, 3]
+        )
+
+
 def test_select_model_by_backtest_returns_reproducible_score_table():
     frame = pd.DataFrame({"value": np.arange(1.0, 11.0)})
 

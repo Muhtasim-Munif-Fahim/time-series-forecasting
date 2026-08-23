@@ -118,6 +118,7 @@ def rolling_origin_backtest(
     window=None,
     gap=0,
     max_folds=None,
+    origins=None,
 ):
     """Evaluate a forecasting callable over reproducible rolling origins.
 
@@ -147,7 +148,23 @@ def rolling_origin_backtest(
     records = []
     fold = 0
     first_origin = initial_window + gap
-    for origin in range(first_origin, len(df) - horizon + 1, step):
+    if origins is None:
+        selected_origins = list(range(first_origin, len(df) - horizon + 1, step))
+    else:
+        selected_origins = list(origins)
+        if not selected_origins or any(
+            isinstance(origin, bool) or not isinstance(origin, int)
+            for origin in selected_origins
+        ):
+            raise ValueError("origins must be a non-empty sequence of integer positions")
+        if selected_origins != sorted(set(selected_origins)):
+            raise ValueError("origins must be unique and sorted in ascending order")
+        if any(
+            origin < first_origin or origin + horizon > len(df)
+            for origin in selected_origins
+        ):
+            raise ValueError("origins must leave a complete training and forecast window")
+    for origin in selected_origins:
         if max_folds is not None and fold >= max_folds:
             break
         train_end = origin - gap
