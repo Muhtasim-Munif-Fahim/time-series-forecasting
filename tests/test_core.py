@@ -173,6 +173,16 @@ def test_ensemble_forecast_can_use_robust_median_aggregation():
         ensemble_forecast([[1.0], [2.0]], weights=[1, 1], method="median")
 
 
+def test_ensemble_forecast_can_trim_extreme_model_predictions():
+    result = ensemble_forecast(
+        [[10.0], [12.0], [14.0], [1000.0]], method="trimmed_mean"
+    )
+    assert result.tolist() == [13.0]
+
+    with pytest.raises(ValueError, match="at least three"):
+        ensemble_forecast([[1.0], [2.0]], method="trimmed_mean")
+
+
 def test_rolling_origin_backtest_returns_tidy_horizon_rows():
     frame = pd.DataFrame(
         {"value": [1, 2, 3, 4, 5, 6]},
