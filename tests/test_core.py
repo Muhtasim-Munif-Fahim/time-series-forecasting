@@ -23,6 +23,7 @@ from ts_forecast.evaluation import (
     summarize_backtest,
     quantile_loss,
     residual_autocorrelation,
+    residual_quantiles,
 )
 from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
 from ts_forecast.tuning import select_model_by_backtest
@@ -85,6 +86,11 @@ def test_forecast_bias():
     y_pred = np.array([1.2, 2.2, 3.2])
     bias = forecast_bias(y_true, y_pred)
     assert pytest.approx(bias) == 0.2
+
+
+def test_residual_quantiles_describe_signed_forecast_error_distribution():
+    quantiles = residual_quantiles([1.0, 2.0, 3.0], [0.0, 2.0, 5.0], quantiles=[0.5])
+    assert quantiles == {"q50": 0.0}
 
 
 def test_symmetric_mape_handles_zero_observations_without_division_errors():

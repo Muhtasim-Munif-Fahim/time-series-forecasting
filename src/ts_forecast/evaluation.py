@@ -103,6 +103,25 @@ def residual_autocorrelation(y_true, y_pred, max_lag=1):
     return {f"lag_{int(lag)}": value for lag, value in zip(lags, values)}
 
 
+def residual_quantiles(y_true, y_pred, quantiles=(0.1, 0.5, 0.9)):
+    """Return selected quantiles of signed forecast residuals (prediction - actual)."""
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    levels = np.asarray(quantiles, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one forecast is required")
+    if levels.size == 0 or np.any((levels < 0.0) | (levels > 1.0)):
+        raise ValueError("quantiles must be a non-empty sequence between 0 and 1")
+    residuals = predicted - observed
+    return {
+        f"q{int(round(level * 100)):02d}": float(np.quantile(residuals, level))
+        for level in levels
+    }
+
+
 def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
     """Return MASE using an in-sample seasonal-naive scaling error.
 
