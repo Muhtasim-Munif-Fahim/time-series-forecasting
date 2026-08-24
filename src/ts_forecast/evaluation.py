@@ -427,6 +427,58 @@ def summarize_interval_backtest(results, coverage=0.9):
     return pd.DataFrame(rows).set_index("horizon")[columns]
 
 
+def backtest_stability(results, score="absolute_error"):
+    """Measure across-origin dispersion of per-horizon backtest scores.
+
+    ``summarize_backtest`` averages accuracy over origins, which hides
+    models whose per-horizon errors swing widely between folds. For each
+    horizon this collects one score per origin and reports the sample
+    standard deviation and interquartile range of those scores next to
+    their mean, so a horizon that is accurate only for some origins
+    becomes visible. A single origin leaves dispersion unidentified:
+    its ``score_std`` is NaN while ``score_iqr`` collapses to zero.
+
+    ``score`` selects the per-fold quantity: ``"absolute_error"``
+    (the default) or ``"squared_error"``.
+    """
+
+    if not isinstance(results, pd.DataFrame):
+        raise TypeError("results must be a pandas.DataFrame")
+    if score not in {"absolute_error", "squared_error"}:
+        raise ValueError("score must be 'absolute_error' or 'squared_error'")
+    required = {"origin", "horizon", "actual", "prediction"}
+    missing = sorted(required - set(results.columns))
+    if missing:
+        raise ValueError(f"backtest results missing columns: {', '.join(missing)}")
+
+    columns = ["count", "score_mean", "score_std", "score_iqr"]
+    if results.empty:
+        return pd.DataFrame(columns=columns).rename_axis("horizon")
+
+    residuals = (
+        results["prediction"].to_numpy(dtype=float)
+        - results["actual"].to_numpy(dtype=float)
+    )
+    values = np.abs(residuals) if score == "absolute_error" else residuals**2
+    scored = results[["horizon", "origin"]].assign(score=values)
+
+    rows = []
+    for horizon, group in scored.groupby("horizon", sort=True):
+        per_origin = group.groupby("origin")["score"].mean().to_numpy(dtype=float)
+        q25, q75 = np.quantile(per_origin, [0.25, 0.75])
+        std = np.std(per_origin, ddof=1) if per_origin.size > 1 else np.nan
+        rows.append(
+            {
+                "horizon": horizon,
+                "count": int(per_origin.size),
+                "score_mean": float(np.mean(per_origin)),
+                "score_std": float(std),
+                "score_iqr": float(q75 - q25),
+            }
+        )
+    return pd.DataFrame(rows).set_index("horizon")[columns]
+
+
 def compare_models(results):
     comparisons = []
     for name, (y_true, y_pred) in results.items():
