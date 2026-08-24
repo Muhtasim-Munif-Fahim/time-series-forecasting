@@ -20,6 +20,7 @@ from ts_forecast.evaluation import (
     mean_absolute_scaled_error,
     root_mean_squared_scaled_error,
     summarize_interval_backtest,
+    seasonal_strength,
     summarize_backtest,
     quantile_loss,
     residual_autocorrelation,
@@ -489,3 +490,32 @@ class TestThetaForecast:
             theta_forecast(pd.DataFrame({"value": [1.0]}), "value")
         with pytest.raises(ValueError, match="two complete seasonal periods"):
             theta_forecast(frame, "value", seasonal_period=2)
+
+
+class TestSeasonalStrength:
+    def test_clean_seasonal_signal_scores_near_one(self):
+        phase = np.sin(2 * np.pi * np.arange(64) / 8)
+        score = seasonal_strength(10.0 + 4.0 * phase, seasonal_period=8)
+        assert score["seasonal_strength"] > 0.9
+
+    def test_white_noise_scores_low(self):
+        rng = np.random.default_rng(7)
+        score = seasonal_strength(rng.normal(size=120), seasonal_period=10)
+        assert score["seasonal_strength"] < 0.5
+
+    def test_strong_trend_scores_high_trend_strength(self):
+        score = seasonal_strength(np.arange(80.0), seasonal_period=8)
+        assert score["trend_strength"] > 0.9
+
+    def test_constant_series_has_no_component_signal(self):
+        score = seasonal_strength(np.full(24, 3.0), seasonal_period=6)
+        assert score["seasonal_strength"] == 0.0
+        assert score["trend_strength"] == 0.0
+
+    def test_validates_period_history_and_finiteness(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            seasonal_strength(np.arange(10.0), seasonal_period=1)
+        with pytest.raises(ValueError, match="two complete seasonal periods"):
+            seasonal_strength(np.arange(9.0), seasonal_period=5)
+        with pytest.raises(ValueError, match="finite"):
+            seasonal_strength([1.0, np.nan] * 6, seasonal_period=4)

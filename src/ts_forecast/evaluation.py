@@ -122,6 +122,55 @@ def residual_quantiles(y_true, y_pred, quantiles=(0.1, 0.5, 0.9)):
     }
 
 
+def seasonal_strength(values, seasonal_period):
+    """Score how strongly a series is driven by seasonality and trend.
+
+    A centered moving average supplies an STL-free trend estimate, the
+    detrended values are averaged by seasonal phase into indices, and
+    whatever remains is treated as noise. Each strength score is
+    ``max(0, 1 - Var(noise) / Var(component + noise))``, so scores near
+    one mean the component explains almost everything and scores near
+    zero mean the component carries no signal beyond the noise.
+    """
+
+    if seasonal_period < 2:
+        raise ValueError("seasonal_period must be at least 2")
+    observed = np.asarray(values, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    period = int(seasonal_period)
+    if observed.size < 2 * period:
+        raise ValueError("need at least two complete seasonal periods")
+
+    smoothed = np.convolve(
+        observed, np.full(period, 1.0 / period), mode="valid"
+    )
+    if period % 2 == 0:
+        trend = 0.5 * (smoothed[:-1] + smoothed[1:])
+    else:
+        trend = smoothed
+    offset = (observed.size - trend.size) // 2
+
+    detrended = observed[offset : offset + trend.size] - trend
+    phases = np.arange(offset, offset + trend.size) % period
+    indices = np.array(
+        [detrended[phases == phase].mean() for phase in range(period)]
+    )
+    indices -= indices.mean()
+    residual = detrended - indices[phases]
+
+    def strength(component_variance):
+        if component_variance == 0:
+            return 0.0
+        ratio = residual.var() / component_variance
+        return float(min(1.0, max(0.0, 1.0 - ratio)))
+
+    return {
+        "seasonal_strength": strength(detrended.var()),
+        "trend_strength": strength((trend + residual).var()),
+    }
+
+
 def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
     """Return MASE using an in-sample seasonal-naive scaling error.
 
