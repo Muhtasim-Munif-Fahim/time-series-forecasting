@@ -79,6 +79,71 @@ def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):
     return np.resize(season, steps)
 
 
+def _ses_forecast_level(values):
+    """Return the fitted simple-exponential-smoothing level of a series."""
+
+    best_sse = np.inf
+    best_level = float(values[-1])
+    for alpha in np.linspace(0.01, 0.99, 99):
+        level = float(values[0])
+        sse = 0.0
+        for observed in values[1:]:
+            sse += (observed - level) ** 2
+            level += alpha * (observed - level)
+        if sse < best_sse:
+            best_sse = sse
+            best_level = level
+    return best_level
+
+
+def theta_forecast(train, target_col, steps=1, seasonal_period=None):
+    """Forecast with the classical Theta method.
+
+    The series is additively deseasonalized when ``seasonal_period`` is
+    given and then split into its two standard theta lines: the
+    least-squares linear trend (theta = 0) and the curvature-amplified
+    line ``2 * x - trend`` (theta = 2). The trend line is extrapolated
+    directly while the theta = 2 line is projected with simple
+    exponential smoothing; the two horizon forecasts are averaged and the
+    seasonal pattern is reapplied, following Assimakopoulos and
+    Nikolopoulos (2000).
+    """
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if seasonal_period is not None and seasonal_period < 2:
+        raise ValueError("seasonal_period must be at least 2 when provided")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size < 3:
+        raise ValueError("training data must contain at least three observations")
+    indices = None
+    if seasonal_period is not None:
+        if values.size < 2 * seasonal_period:
+            raise ValueError(
+                "training data must contain at least two complete seasonal periods"
+            )
+        period = int(seasonal_period)
+        cycles = values.size // period
+        indices = np.array(
+            [values[offset::period][:cycles].mean() for offset in range(period)]
+        )
+        indices -= indices.mean()
+        values = values - indices[np.arange(values.size) % period]
+
+    time = np.arange(values.size, dtype=float)
+    slope, intercept = np.polyfit(time, values, 1)
+    trend_line = intercept + slope * time
+    theta_two_line = 2.0 * values - trend_line
+    level = _ses_forecast_level(theta_two_line)
+    horizon = np.arange(1, steps + 1, dtype=float)
+    trend_forecast = intercept + slope * (values.size - 1 + horizon)
+    forecast = 0.5 * (trend_forecast + level)
+    if indices is not None:
+        phases = (values.size - 1 + horizon).astype(int) % len(indices)
+        forecast = forecast + indices[phases]
+    return forecast
+
+
 def forecast_arima(train, target_col, order=(1, 1, 1), steps=1):
     model = ARIMA(train[target_col].dropna(), order=order)
     fitted = model.fit()

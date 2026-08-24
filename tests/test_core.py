@@ -25,7 +25,12 @@ from ts_forecast.evaluation import (
     residual_autocorrelation,
     residual_quantiles,
 )
-from ts_forecast.models import ensemble_forecast, rolling_origin_backtest, seasonal_naive_forecast
+from ts_forecast.models import (
+    ensemble_forecast,
+    rolling_origin_backtest,
+    seasonal_naive_forecast,
+    theta_forecast,
+)
 from ts_forecast.tuning import select_model_by_backtest
 
 
@@ -453,3 +458,34 @@ class TestResidualAutocorrelation:
         with pytest.raises(ValueError, match="variance"):
             residual_autocorrelation([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
 
+
+class TestThetaForecast:
+    def test_constant_series_is_reproduced_exactly(self):
+        frame = pd.DataFrame({"value": [5.0] * 10})
+        prediction = theta_forecast(frame, "value", steps=3)
+        assert prediction.tolist() == [5.0, 5.0, 5.0]
+
+    def test_trended_series_stays_between_persistence_and_trend(self):
+        frame = pd.DataFrame({"value": np.arange(1.0, 13.0)})
+        prediction = theta_forecast(frame, "value", steps=3)
+        exact_trend = np.arange(13.0, 16.0)
+        assert np.all(np.diff(prediction) > 0)
+        assert np.all(prediction > 12.0)
+        assert np.all(prediction < exact_trend)
+
+    def test_seasonal_pattern_is_removed_and_reapplied(self):
+        offsets = np.array([0.0, 4.0, 1.0, 5.0, 2.0, 6.0, 3.0])
+        frame = pd.DataFrame({"value": 20.0 + np.tile(offsets, 3)})
+        prediction = theta_forecast(frame, "value", steps=7, seasonal_period=7)
+        assert np.allclose(prediction, 20.0 + offsets, atol=1e-8)
+
+    def test_validates_horizon_seasonality_and_history(self):
+        frame = pd.DataFrame({"value": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="steps"):
+            theta_forecast(frame, "value", steps=0)
+        with pytest.raises(ValueError, match="seasonal_period must be at least 2"):
+            theta_forecast(frame, "value", seasonal_period=1)
+        with pytest.raises(ValueError, match="three observations"):
+            theta_forecast(pd.DataFrame({"value": [1.0]}), "value")
+        with pytest.raises(ValueError, match="two complete seasonal periods"):
+            theta_forecast(frame, "value", seasonal_period=2)
