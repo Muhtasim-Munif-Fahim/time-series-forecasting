@@ -12,6 +12,7 @@ from ts_forecast.preprocessing import (
 )
 from ts_forecast.evaluation import (
     compute_metrics,
+    calibrate_conformal_radii,
     conformal_prediction_interval,
     forecast_bias,
     symmetric_mean_absolute_percentage_error,
@@ -573,3 +574,31 @@ class TestReconcileBottomUp:
             )
         with pytest.raises(ValueError, match="same horizon"):
             reconcile_bottom_up({"a": [1.0, 2.0], "b": [1.0]}, {"c": ["b"]})
+
+
+class TestCalibrateConformalRadii:
+    def test_too_narrow_radii_are_expanded_to_nominal_coverage(self):
+        scale = calibrate_conformal_radii(
+            [3.0, 6.0, 9.0, 12.0], [0.0] * 4, [1.0] * 4, coverage=0.75
+        )
+        assert scale == 12.0
+
+    def test_overly_wide_radii_shrink_toward_the_observed_errors(self):
+        scale = calibrate_conformal_radii(
+            [1.0, 2.0], [0.0, 0.0], [10.0, 20.0], coverage=0.5
+        )
+        assert scale == pytest.approx(0.1)
+
+    def test_ignores_nonfinite_calibration_pairs(self):
+        scale = calibrate_conformal_radii(
+            [1.0, np.nan], [0.0, 0.0], [4.0, 4.0], coverage=0.5
+        )
+        assert scale == pytest.approx(0.25)
+
+    def test_rejects_bad_coverage_shapes_and_radii(self):
+        with pytest.raises(ValueError, match="strictly between"):
+            calibrate_conformal_radii([1.0], [0.0], [1.0], coverage=0.0)
+        with pytest.raises(ValueError, match="equal length"):
+            calibrate_conformal_radii([1.0, 2.0], [0.0], [1.0, 1.0])
+        with pytest.raises(ValueError, match="strictly positive"):
+            calibrate_conformal_radii([1.0], [0.0], [0.0])

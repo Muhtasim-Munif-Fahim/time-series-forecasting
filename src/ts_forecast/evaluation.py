@@ -39,6 +39,42 @@ def conformal_prediction_interval(
     return point_forecast - radius, point_forecast + radius
 
 
+def calibrate_conformal_radii(calibration_true, calibration_pred, radii, coverage=0.9):
+    """Return the scale factor aligning model radii with nominal coverage.
+
+    Models that emit per-observation uncertainty estimates (residual
+    scales, spread forecasts) still need a global correction before the
+    resulting intervals are calibrated. This finds the smallest factor
+    such that ``abs(true - pred) <= factor * radius`` holds on at least
+    the finite-sample target share of calibration pairs, using the same
+    quantile rule as :func:`conformal_prediction_interval`. Multiply the
+    raw radii by the returned factor when building forecast intervals.
+    """
+
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    observed = np.asarray(calibration_true, dtype=float).ravel()
+    predicted = np.asarray(calibration_pred, dtype=float).ravel()
+    widths = np.asarray(radii, dtype=float).ravel()
+    if not (observed.shape == predicted.shape == widths.shape):
+        raise ValueError(
+            "calibration_true, calibration_pred, and radii must have equal length"
+        )
+
+    finite = np.isfinite(observed) & np.isfinite(predicted) & np.isfinite(widths)
+    usable_widths = widths[finite]
+    if usable_widths.size == 0:
+        raise ValueError("at least one finite calibration observation is required")
+    if np.any(usable_widths <= 0):
+        raise ValueError("radii must be strictly positive")
+    scores = np.abs(observed[finite] - predicted[finite]) / usable_widths
+    quantile_level = min(
+        1.0,
+        np.ceil((scores.size + 1) * coverage) / scores.size,
+    )
+    return float(np.quantile(scores, quantile_level, method="higher"))
+
+
 def compute_metrics(y_true, y_pred, prefix=""):
     return {
         f"{prefix}mae": mean_absolute_error(y_true, y_pred),
