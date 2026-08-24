@@ -128,6 +128,73 @@ def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):
     return np.resize(season, steps)
 
 
+def select_season_length(train, target_col, candidates):
+    """Pick the candidate period whose lag shows the strongest autocorrelation.
+
+    Every candidate is scored by the autocorrelation of the target series at
+    exactly that lag and the strongest score wins; ties go to the shortest
+    period so simpler seasonal patterns are preferred. The selected length
+    can be handed straight to :func:`seasonal_naive_forecast`.
+    """
+
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    try:
+        periods = list(candidates)
+    except TypeError:
+        raise ValueError(
+            "candidates must be a non-empty sequence of integer periods"
+        ) from None
+    if not periods or any(
+        isinstance(period, bool) or not isinstance(period, int)
+        for period in periods
+    ):
+        raise ValueError("candidates must be a non-empty sequence of integer periods")
+    if any(period < 2 for period in periods):
+        raise ValueError("candidate periods must be at least 2")
+
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+    longest = max(periods)
+    if values.size <= longest:
+        raise ValueError(
+            "training data must contain more observations than the longest candidate period"
+        )
+    centered = values - values.mean()
+    denominator = float(np.dot(centered, centered))
+    if not np.isfinite(denominator) or denominator == 0:
+        raise ValueError("training data must have non-zero variance")
+
+    best_period = None
+    best_score = -np.inf
+    for period in sorted(set(periods)):
+        score = float(np.dot(centered[period:], centered[:-period])) / denominator
+        if score > best_score:
+            best_score = score
+            best_period = period
+    return int(best_period)
+
+
+def seasonal_naive_auto(train, target_col, steps=1, candidates=(7, 30, 365)):
+    """Seasonal-naive forecast using the dominant candidate season length.
+
+    ``select_season_length`` picks the candidate whose lag autocorrelates
+    most strongly and :func:`seasonal_naive_forecast` repeats the most
+    recent season of that length. The default candidates cover weekly,
+    monthly, and annual cycles for daily data; pass a custom sequence to
+    search other lags. Every candidate must be shorter than the training
+    history.
+    """
+
+    period = select_season_length(train, target_col, candidates)
+    return seasonal_naive_forecast(
+        train, target_col, steps=steps, seasonal_period=period
+    )
+
+
 def _ses_forecast_level(values):
     """Return the fitted simple-exponential-smoothing level of a series."""
 
