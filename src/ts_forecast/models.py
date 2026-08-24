@@ -1,5 +1,7 @@
 """Time series forecasting models."""
 
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
@@ -61,6 +63,53 @@ def ensemble_forecast(forecasts, weights=None, method="mean"):
             raise ValueError("at least one weight must be positive")
 
     return np.average(np.vstack(arrays), axis=0, weights=normalized)
+
+
+def reconcile_bottom_up(forecasts, structure):
+    """Rebuild every hierarchical level from its leaves (bottom-up).
+
+    ``forecasts`` maps node names to point forecasts and ``structure``
+    maps aggregate names to their direct children. Leaf forecasts are
+    kept unchanged and each aggregate is replaced by the sum of its
+    descendants, so totals, regions, and stores become mutually
+    consistent. Aggregates named in ``structure`` but absent from
+    ``forecasts`` are derived from their children instead of being
+    required.
+    """
+
+    if not isinstance(forecasts, Mapping):
+        raise ValueError("forecasts must be a mapping of node names")
+    if not forecasts:
+        raise ValueError("forecasts must contain at least one node")
+    if not isinstance(structure, Mapping) or not structure:
+        raise ValueError("structure must map aggregates to their children")
+    arrays = {}
+    for name, forecast in forecasts.items():
+        array = np.asarray(forecast, dtype=float).ravel()
+        if array.size == 0:
+            raise ValueError("forecasts must not be empty")
+        arrays[name] = array
+    if len({array.size for array in arrays.values()}) != 1:
+        raise ValueError("all leaf forecasts must have the same horizon")
+    for children in structure.values():
+        for child in children:
+            if child not in arrays and child not in structure:
+                raise KeyError(f"unknown node in hierarchy: {child}")
+
+    def total(node, visiting):
+        if node in visiting:
+            raise ValueError("hierarchy must not contain cycles")
+        children = list(structure.get(node, ()))
+        if not children:
+            return arrays[node]
+        return np.sum(
+            [total(child, visiting | {node}) for child in children], axis=0
+        )
+
+    reconciled = {}
+    for name in list(arrays) + [node for node in structure if node not in arrays]:
+        reconciled[name] = total(name, frozenset())
+    return reconciled
 
 
 def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):

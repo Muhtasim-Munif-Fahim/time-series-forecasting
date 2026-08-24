@@ -31,6 +31,7 @@ from ts_forecast.models import (
     rolling_origin_backtest,
     seasonal_naive_forecast,
     theta_forecast,
+    reconcile_bottom_up,
 )
 from ts_forecast.tuning import select_model_by_backtest
 
@@ -519,3 +520,56 @@ class TestSeasonalStrength:
             seasonal_strength(np.arange(9.0), seasonal_period=5)
         with pytest.raises(ValueError, match="finite"):
             seasonal_strength([1.0, np.nan] * 6, seasonal_period=4)
+
+
+class TestReconcileBottomUp:
+    def test_aggregates_become_sums_of_descendants(self):
+        forecasts = {"total": [100.0], "north": [60.0], "south": [30.0]}
+        structure = {"total": ["north", "south"]}
+
+        result = reconcile_bottom_up(forecasts, structure)
+
+        assert result["total"].tolist() == [90.0]
+        assert result["north"].tolist() == [60.0]
+        assert result["south"].tolist() == [30.0]
+        assert forecasts["total"] == [100.0]
+
+    def test_nested_levels_reconcile_recursively(self):
+        forecasts = {
+            "total": [0.0, 0.0],
+            "region_a": [9.0, 9.0],
+            "store_1": [4.0, 5.0],
+            "store_2": [1.0, 1.0],
+            "store_3": [2.0, 2.0],
+        }
+        structure = {
+            "total": ["region_a", "region_b"],
+            "region_a": ["store_1", "store_2"],
+            "region_b": ["store_3"],
+        }
+
+        result = reconcile_bottom_up(forecasts, structure)
+
+        assert result["region_a"].tolist() == [5.0, 6.0]
+        assert result["region_b"].tolist() == [2.0, 2.0]
+        assert result["total"].tolist() == [7.0, 8.0]
+
+    def test_missing_intermediate_aggregates_are_derived(self):
+        forecasts = {"store_1": [3.0], "store_2": [4.0]}
+        structure = {"total": ["region"], "region": ["store_1", "store_2"]}
+
+        result = reconcile_bottom_up(forecasts, structure)
+
+        assert set(result) == {"total", "region", "store_1", "store_2"}
+        assert result["region"].tolist() == [7.0]
+        assert result["total"].tolist() == [7.0]
+
+    def test_rejects_unknown_children_cycles_and_mixed_horizons(self):
+        with pytest.raises(KeyError, match="unknown node"):
+            reconcile_bottom_up({"a": [1.0]}, {"a": ["ghost"]})
+        with pytest.raises(ValueError, match="cycle"):
+            reconcile_bottom_up(
+                {"a": [1.0], "b": [1.0]}, {"a": ["b"], "b": ["a"]}
+            )
+        with pytest.raises(ValueError, match="same horizon"):
+            reconcile_bottom_up({"a": [1.0, 2.0], "b": [1.0]}, {"c": ["b"]})
