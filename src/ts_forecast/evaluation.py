@@ -251,6 +251,41 @@ def root_mean_squared_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
         raise ValueError("seasonal-naive training error must be finite and non-zero")
     return float(np.sqrt(np.mean((observed - predicted) ** 2) / scale))
 
+def forecast_skill_score(y_true, y_pred, y_baseline, score="mae"):
+    """Return signed skill as percent improvement over a reference forecast.
+
+    Raw error magnitudes say nothing about whether a model is actually
+    better than a cheaper alternative. This compares the candidate and
+    baseline forecasts on identical observations with ``score`` ("mae" or
+    "rmse") and combines them into
+    ``100 * (1 - model_loss / baseline_loss)``, so positive values mark
+    skillful improvements, zero marks parity, and negative values mark
+    forecasts that lose to the reference. Unlike MASE or RMSSE the scale
+    comes from an explicit out-of-sample forecast rather than in-sample
+    training errors.
+    """
+
+    if score not in {"mae", "rmse"}:
+        raise ValueError("score must be 'mae' or 'rmse'")
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    baseline = np.asarray(y_baseline, dtype=float).ravel()
+    if not (observed.shape == predicted.shape == baseline.shape):
+        raise ValueError("y_true, y_pred, and y_baseline must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one observation is required")
+
+    def loss(values):
+        residual = observed - values
+        if score == "mae":
+            return float(np.mean(np.abs(residual)))
+        return float(np.sqrt(np.mean(residual**2)))
+
+    reference = loss(baseline)
+    if not np.isfinite(reference) or reference == 0:
+        raise ValueError("baseline loss must be finite and non-zero")
+    return 100.0 * (1.0 - loss(predicted) / reference)
+
 
 def interval_metrics(y_true, lower, upper, coverage=0.9):
     """Evaluate prediction intervals with coverage, width, and Winkler score."""
