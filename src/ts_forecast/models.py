@@ -112,6 +112,42 @@ def reconcile_bottom_up(forecasts, structure):
     return reconciled
 
 
+def repair_quantile_crossing(forecasts):
+    """Rearrange multi-quantile forecasts until quantiles stop crossing.
+
+    Per-quantile forecasts produced independently routinely cross: some
+    horizon ends up with a nominal 0.9 bound below its 0.1 bound, which
+    makes interval widths negative and pinball scores misleading.
+    Rearrangement sorts each horizon's quantile forecasts into increasing
+    order, the unique projection that restores monotonicity while keeping
+    every row's original values. ``forecasts`` may be a mapping from
+    quantile level to a 1-D forecast, or a 2-D array whose columns follow
+    ascending quantile levels. Returns ``(repaired, crossings_fixed)``
+    where ``crossings_fixed`` counts adjacent-level violations removed.
+    """
+
+    if isinstance(forecasts, Mapping):
+        if not forecasts:
+            raise ValueError("at least one quantile forecast is required")
+        levels = sorted(forecasts)
+        if any(not 0.0 < float(level) < 1.0 for level in levels):
+            raise ValueError("quantile levels must be strictly between 0 and 1")
+        matrix = np.column_stack(
+            [np.asarray(forecasts[level], dtype=float).ravel() for level in levels]
+        )
+    else:
+        matrix = np.asarray(forecasts, dtype=float)
+        if matrix.ndim != 2:
+            raise ValueError("forecasts must be 2-D (horizons x quantiles) or a dict")
+    if matrix.shape[0] == 0 or matrix.shape[1] < 2:
+        raise ValueError("crossing needs at least two quantile forecasts per horizon")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("forecasts must contain only finite values")
+
+    crossings_fixed = int(np.sum(matrix[:, :-1] > matrix[:, 1:]))
+    return np.sort(matrix, axis=1), crossings_fixed
+
+
 def seasonal_naive_forecast(train, target_col, steps=1, seasonal_period=7):
     """Repeat the most recent observed season for the requested horizon."""
 
