@@ -112,6 +112,102 @@ def reconcile_bottom_up(forecasts, structure):
     return reconciled
 
 
+def reconcile_top_down(forecasts, structure, shares):
+    """Spread every aggregate forecast down its hierarchy (top-down).
+
+    ``forecasts`` maps node names to point forecasts, ``structure``
+    maps aggregate names to their direct children, and ``shares`` gives
+    every child its fraction of its parent. Each root forecast is
+    authoritative: children receive their share of the parent amount,
+    independently produced branch forecasts are discarded, and every
+    aggregate is replaced by the sum of everything below it. Shares
+    within one sibling group need not sum to one; they are normalized
+    internally. Children named in ``structure`` need no forecast of
+    their own; they are created purely by allocation, and nodes outside
+    every hierarchy are returned unchanged.
+    """
+
+    if not isinstance(forecasts, Mapping):
+        raise ValueError("forecasts must be a mapping of node names")
+    if not forecasts:
+        raise ValueError("forecasts must contain at least one node")
+    if not isinstance(structure, Mapping) or not structure:
+        raise ValueError("structure must map aggregates to their children")
+    if not isinstance(shares, Mapping):
+        raise ValueError("shares must map node names to proportions")
+    arrays = {}
+    for name, forecast in forecasts.items():
+        array = np.asarray(forecast, dtype=float).ravel()
+        if array.size == 0:
+            raise ValueError("forecasts must not be empty")
+        arrays[name] = array
+    if len({array.size for array in arrays.values()}) != 1:
+        raise ValueError("all forecasts must have the same horizon")
+
+    def normalize(node, visiting):
+        if node in visiting:
+            raise ValueError("hierarchy must not contain cycles")
+        children = list(structure.get(node, ()))
+        if not children:
+            return
+        weights = []
+        for child in children:
+            try:
+                weight = float(shares[child])
+            except KeyError:
+                raise KeyError(f"missing share for node: {child}") from None
+            if not np.isfinite(weight) or weight < 0:
+                raise ValueError(
+                    f"share for {child} must be finite and non-negative"
+                )
+            weights.append(weight)
+        if sum(weights) <= 0:
+            raise ValueError(f"children of {node} must have a positive share sum")
+        for child in children:
+            normalize(child, visiting | {node})
+
+    for node in structure:
+        normalize(node, frozenset())
+
+    all_children = {
+        child for children in structure.values() for child in children
+    }
+    roots = [node for node in structure if node not in all_children]
+    for root in roots:
+        if root not in arrays:
+            raise KeyError(f"missing forecast for top-level node: {root}")
+
+    reconciled = {name: array.copy() for name, array in arrays.items()}
+
+    def distribute(node, amount, visiting):
+        if node in visiting:
+            raise ValueError("hierarchy must not contain cycles")
+        children = list(structure.get(node, ()))
+        if not children:
+            reconciled[node] = np.asarray(amount, dtype=float)
+            return
+        weights = [float(shares[child]) for child in children]
+        total_weight = sum(weights)
+        for child, weight in zip(children, weights):
+            distribute(child, amount * (weight / total_weight), visiting | {node})
+
+    def totalize(node, visiting):
+        if node in visiting:
+            raise ValueError("hierarchy must not contain cycles")
+        children = list(structure.get(node, ()))
+        if not children:
+            return reconciled[node]
+        reconciled[node] = np.sum(
+            [totalize(child, visiting | {node}) for child in children], axis=0
+        )
+        return reconciled[node]
+
+    for root in roots:
+        distribute(root, arrays[root], frozenset())
+        totalize(root, frozenset())
+    return reconciled
+
+
 def repair_quantile_crossing(forecasts):
     """Rearrange multi-quantile forecasts until quantiles stop crossing.
 
