@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm, t as student_t
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
 
@@ -285,6 +286,70 @@ def forecast_skill_score(y_true, y_pred, y_baseline, score="mae"):
     if not np.isfinite(reference) or reference == 0:
         raise ValueError("baseline loss must be finite and non-zero")
     return 100.0 * (1.0 - loss(predicted) / reference)
+
+
+def diebold_mariano_test(
+    y_true,
+    y_pred_a,
+    y_pred_b,
+    loss="squared",
+    max_lag=0,
+    small_sample=False,
+):
+    """Test whether two forecasts differ significantly in accuracy.
+
+    For every observation the losses of both forecasts are compared,
+    giving a loss differential whose mean decides which forecast is
+    more accurate; a negative statistic favours ``y_pred_a``. The
+    denominator uses the Newey-West long-run variance so autocorrelated
+    multi-step differentials stay valid: set ``max_lag`` to the forecast
+    horizon minus one (zero for one-step-ahead). With ``small_sample``
+    the statistic is scaled by the Harvey-Leybourne-Newbold correction
+    and referred to a t distribution instead of the standard normal.
+    Returns a two-sided test as ``{"dm_stat": ..., "p_value": ...}``.
+    """
+
+    if loss not in {"squared", "absolute"}:
+        raise ValueError("loss must be 'squared' or 'absolute'")
+    if isinstance(max_lag, bool) or not isinstance(max_lag, int) or max_lag < 0:
+        raise ValueError("max_lag must be a non-negative integer")
+    observed = np.asarray(y_true, dtype=float).ravel()
+    first = np.asarray(y_pred_a, dtype=float).ravel()
+    second = np.asarray(y_pred_b, dtype=float).ravel()
+    if not (observed.shape == first.shape == second.shape):
+        raise ValueError("y_true, y_pred_a, and y_pred_b must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one observation is required")
+    if observed.size <= max_lag:
+        raise ValueError("need more observations than max_lag")
+
+    errors_first = observed - first
+    errors_second = observed - second
+    if loss == "squared":
+        differential = errors_first**2 - errors_second**2
+    else:
+        differential = np.abs(errors_first) - np.abs(errors_second)
+
+    count = differential.size
+    centered = differential - differential.mean()
+    long_run = float(np.mean(centered**2))
+    for lag in range(1, max_lag + 1):
+        weight = 1.0 - lag / (max_lag + 1.0)
+        covariance = float(np.dot(centered[lag:], centered[:-lag])) / count
+        long_run += 2.0 * weight * covariance
+    if not np.isfinite(long_run) or long_run <= 0:
+        raise ValueError("loss differential variance must be finite and positive")
+
+    statistic = float(differential.mean() / np.sqrt(long_run / count))
+    if small_sample:
+        correction = np.sqrt(
+            (count + 1 - 2 * max_lag + max_lag * (max_lag - 1) / count) / count
+        )
+        statistic *= correction
+        p_value = float(2.0 * student_t.sf(abs(statistic), df=count - 1))
+    else:
+        p_value = float(2.0 * norm.sf(abs(statistic)))
+    return {"dm_stat": statistic, "p_value": p_value}
 
 
 def interval_metrics(y_true, lower, upper, coverage=0.9):
