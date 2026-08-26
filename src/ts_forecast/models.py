@@ -1,4 +1,4 @@
-"""Time series forecasting models."""
+﻿"""Time series forecasting models."""
 
 from collections.abc import Mapping
 
@@ -229,6 +229,48 @@ def seasonal_naive_auto(train, target_col, steps=1, candidates=(7, 30, 365)):
     return seasonal_naive_forecast(
         train, target_col, steps=steps, seasonal_period=period
     )
+
+
+def naive2_forecast(train, target_col, steps=1, seasonal_period=None):
+    """Forecast with the Naive2 benchmark used in the M4 competition.
+
+    Seasonal indices are averaged per phase over complete cycles and
+    centered, the deseasonalized series is projected as a random walk by
+    repeating its last value across the horizon, and the seasonal pattern
+    is reapplied to every forecast step. Without ``seasonal_period`` the
+    method reduces to the plain naive forecast.
+    """
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if seasonal_period is not None and seasonal_period < 2:
+        raise ValueError("seasonal_period must be at least 2 when provided")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+
+    indices = None
+    if seasonal_period is not None:
+        period = int(seasonal_period)
+        if values.size < period:
+            raise ValueError(
+                "training data must contain at least one complete seasonal period"
+            )
+        cycles = values.size // period
+        indices = np.array(
+            [values[offset::period][:cycles].mean() for offset in range(period)]
+        )
+        indices -= indices.mean()
+        values = values - indices[np.arange(values.size) % period]
+
+    forecast = np.full(steps, float(values[-1]))
+    if indices is not None:
+        horizon = np.arange(1, steps + 1)
+        phases = (values.size - 1 + horizon) % len(indices)
+        forecast = forecast + indices[phases]
+    return forecast
 
 
 def _ses_forecast_level(values):
