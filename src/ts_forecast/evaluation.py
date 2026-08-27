@@ -586,3 +586,90 @@ def compare_models(results):
         metrics["model"] = name
         comparisons.append(metrics)
     return pd.DataFrame(comparisons).set_index("model")
+
+def recalibrate_conformal_intervals(
+    calibration_true,
+    calibration_pred,
+    heldout_true,
+    heldout_pred,
+    forecast,
+    coverage=0.9,
+):
+    """Recalibrate split-conformal intervals using held-out miscoverage.
+
+    Standard split-conformal intervals target nominal coverage but can
+    under- or over-cover on new data. This function measures the empirical
+    coverage of conformal intervals on a held-out set and returns adjusted
+    intervals for the forecast by scaling the conformal radius.
+
+    Parameters
+    ----------
+    calibration_true, calibration_pred : array-like
+        Calibration data used to build the initial conformal radius.
+    heldout_true, heldout_pred : array-like
+        Held-out data for measuring empirical coverage. Must be independent
+        of the calibration set.
+    forecast : array-like
+        Point forecasts to build intervals around.
+    coverage : float, default 0.9
+        Nominal coverage level for the initial conformal intervals.
+
+    Returns
+    -------
+    lower, upper : ndarray
+        Recalibrated prediction intervals for the forecast.
+    scale_factor : float
+        Multiplicative factor applied to the original conformal radius.
+    empirical_coverage : float
+        Observed coverage on the held-out set before recalibration.
+    """
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+
+    # Build initial conformal radius on calibration data
+    observed_cal = np.asarray(calibration_true, dtype=float).ravel()
+    predicted_cal = np.asarray(calibration_pred, dtype=float).ravel()
+    if observed_cal.shape != predicted_cal.shape:
+        raise ValueError("calibration_true and calibration_pred must have equal length")
+    finite_cal = np.isfinite(observed_cal) & np.isfinite(predicted_cal)
+    scores = np.abs(observed_cal[finite_cal] - predicted_cal[finite_cal])
+    if scores.size == 0:
+        raise ValueError("at least one finite calibration residual is required")
+
+    quantile_level = min(
+        1.0,
+        np.ceil((scores.size + 1) * coverage) / scores.size,
+    )
+    radius = float(np.quantile(scores, quantile_level, method="higher"))
+
+    # Evaluate empirical coverage on held-out data
+    observed_ho = np.asarray(heldout_true, dtype=float).ravel()
+    predicted_ho = np.asarray(heldout_pred, dtype=float).ravel()
+    if observed_ho.shape != predicted_ho.shape:
+        raise ValueError("heldout_true and heldout_pred must have equal length")
+    finite_ho = np.isfinite(observed_ho) & np.isfinite(predicted_ho)
+    if not np.any(finite_ho):
+        raise ValueError("held-out set must contain at least one finite pair")
+    ho_scores = np.abs(observed_ho[finite_ho] - predicted_ho[finite_ho])
+
+    empirical_coverage = float(np.mean(ho_scores <= radius))
+
+    # Compute scale factor to align empirical with nominal coverage
+    target_quantile = min(
+        1.0,
+        np.ceil((ho_scores.size + 1) * coverage) / ho_scores.size,
+    )
+    target_radius = float(np.quantile(ho_scores, target_quantile, method="higher"))
+
+    if radius > 0:
+        scale_factor = target_radius / radius
+    else:
+        scale_factor = 1.0
+
+    # Apply scaled radius to forecast
+    point_forecast = np.asarray(forecast, dtype=float)
+    scaled_radius = radius * scale_factor
+    lower = point_forecast - scaled_radius
+    upper = point_forecast + scaled_radius
+
+    return lower, upper, scale_factor, empirical_coverage
