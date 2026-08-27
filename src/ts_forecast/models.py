@@ -547,3 +547,103 @@ def rolling_origin_backtest(
                 }
             )
     return pd.DataFrame.from_records(records)
+
+
+def aggregate_forecast_horizons(
+    forecast,
+    timestamps,
+    freq='W',
+    method='sum',
+    level_methods=None,
+):
+    """Aggregate forecast horizons to a lower frequency.
+
+    Rolls up fine-grained forecasts (e.g., daily) to coarser periods
+    (e.g., weekly, monthly) using specified aggregation rules.
+
+    Parameters
+    ----------
+    forecast : array-like
+        Point forecasts at the original frequency. Must be 1-D.
+    timestamps : array-like of pandas.Timestamp or datetime-like
+        Timestamps corresponding to each forecast step. Must match
+        the length of forecast.
+    freq : str, default 'W'
+        Target frequency for aggregation. Pandas offset alias
+        (e.g., 'W' for weekly, 'M' for month-end, 'MS' for month-start,
+        'Q' for quarter-end, 'A' for year-end).
+    method : str, default 'sum'
+        Default aggregation method for all levels. One of:
+        'sum', 'mean', 'last', 'first', 'min', 'max'.
+    level_methods : dict, optional
+        Per-level aggregation overrides. Keys are pandas period strings
+        (e.g., '2024-01', '2024-01-01') and values are method names.
+        Allows different aggregation rules for specific periods.
+
+    Returns
+    -------
+    agg_forecast : ndarray
+        Aggregated forecasts at the target frequency.
+    agg_timestamps : ndarray of pandas.Timestamp
+        Representative timestamps for each aggregated period
+        (period end by default).
+    periods : ndarray of pandas.Period
+        Period objects for each aggregated bucket.
+
+    Examples
+    --------
+    >>> daily_fc = np.arange(1, 32)
+    >>> daily_ts = pd.date_range('2024-01-01', periods=31, freq='D')
+    >>> weekly_fc, weekly_ts, periods = aggregate_forecast_horizons(
+    ...     daily_fc, daily_ts, freq='W', method='sum'
+    ... )
+    """
+    import numpy as np
+    import pandas as pd
+
+    valid_methods = {'sum', 'mean', 'last', 'first', 'min', 'max'}
+    if method not in valid_methods:
+        raise ValueError(f"method must be one of {sorted(valid_methods)}")
+
+    fc = np.asarray(forecast, dtype=float).ravel()
+    ts = pd.to_datetime(timestamps)
+    if fc.size != ts.size:
+        raise ValueError("forecast and timestamps must have equal length")
+    if fc.size == 0:
+        raise ValueError("forecast must not be empty")
+    if not np.all(np.isfinite(fc)):
+        raise ValueError("forecast must contain only finite values")
+
+    periods = ts.to_period(freq)
+    unique_periods = periods.unique()
+
+    agg_values = []
+    agg_ts = []
+    agg_periods = []
+
+    for period in unique_periods:
+        mask = periods == period
+        values = fc[mask]
+        period_key = str(period)
+        agg_method = level_methods.get(period_key, method) if level_methods else method
+
+        if agg_method == 'sum':
+            agg_val = np.sum(values)
+        elif agg_method == 'mean':
+            agg_val = np.mean(values)
+        elif agg_method == 'last':
+            agg_val = values[-1]
+        elif agg_method == 'first':
+            agg_val = values[0]
+        elif agg_method == 'min':
+            agg_val = np.min(values)
+        elif agg_method == 'max':
+            agg_val = np.max(values)
+        else:
+            raise ValueError(f"unknown aggregation method: {agg_method}")
+
+        agg_values.append(agg_val)
+        agg_ts.append(period.to_timestamp(how='end'))
+        agg_periods.append(period)
+
+    return np.array(agg_values), np.array(agg_ts), np.array(agg_periods)
