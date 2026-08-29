@@ -140,6 +140,69 @@ def residual_autocorrelation(y_true, y_pred, max_lag=1):
     return {f"lag_{int(lag)}": value for lag, value in zip(lags, values)}
 
 
+def ljung_box_test(residuals, lags=None, alpha=0.05):
+    """Test residual serial correlation with the Ljung-Box Q statistic.
+
+    White-noise residuals are the target after fitting a model; residuals
+    that still autocorrelate mean structure is left on the table. Unlike
+    :func:`residual_autocorrelation`, which reports raw lag correlations,
+    this is a portmanteau hypothesis test: the Q statistic accumulates
+    squared sample autocorrelations with a small-sample correction and its
+    p-value is read from a chi-squared null distribution, so the answer is
+    a verdict rather than a correlation magnitude. ``lags`` accepts a
+    single integer (the test is then performed at every lag up to it) or
+    an explicit sequence of lags. The verdict is ``autocorrelated`` when
+    any tested lag rejects the white-noise null at ``alpha``.
+    """
+
+    from statsmodels.stats.diagnostic import acorr_ljungbox
+
+    observed = np.asarray(residuals, dtype=float).ravel()
+    if observed.size == 0:
+        raise ValueError("residuals must not be empty")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("residuals must contain only finite numbers")
+    if observed.size < 2:
+        raise ValueError("at least two residuals are required")
+    if np.all(observed == observed[0]):
+        raise ValueError("residuals must have non-zero variance")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    if isinstance(lags, bool):
+        raise ValueError("lags must be a positive integer or a sequence of integers")
+    if lags is None:
+        tested_lags = int(min(10, observed.size - 1))
+    elif isinstance(lags, int):
+        if lags < 1:
+            raise ValueError("lags must be a positive integer")
+        tested_lags = lags
+    else:
+        tested_lags = [int(lag) for lag in lags]
+        if not tested_lags or any(lag < 1 for lag in tested_lags):
+            raise ValueError("lags must be a non-empty sequence of positive integers")
+    if isinstance(tested_lags, list):
+        if max(tested_lags) >= observed.size:
+            raise ValueError("lags must stay below the number of residuals")
+    elif tested_lags >= observed.size:
+        raise ValueError("lags must stay below the number of residuals")
+
+    table = acorr_ljungbox(observed, lags=tested_lags, return_df=True)
+    tests = [
+        {
+            "lag": int(lag),
+            "lb_stat": float(row["lb_stat"]),
+            "p_value": float(row["lb_pvalue"]),
+        }
+        for lag, row in table.iterrows()
+    ]
+    return {
+        "autocorrelated": bool(any(test["p_value"] < alpha for test in tests)),
+        "alpha": float(alpha),
+        "significant_lags": [test["lag"] for test in tests if test["p_value"] < alpha],
+        "tests": tests,
+    }
+
+
 def residual_quantiles(y_true, y_pred, quantiles=(0.1, 0.5, 0.9)):
     """Return selected quantiles of signed forecast residuals (prediction - actual)."""
 
