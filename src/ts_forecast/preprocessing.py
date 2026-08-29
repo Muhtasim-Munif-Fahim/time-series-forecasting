@@ -54,6 +54,110 @@ def drop_na_features(df):
     return df.dropna()
 
 
+def impute_missing(values, method="forward", seasonal_period=None):
+    """Fill missing values in a time series with a chosen imputation rule.
+
+    ``method`` selects the strategy: ``"forward"`` carries the last
+    observation forward, ``"backward"`` carries the next observation
+    backward, ``"linear"`` interpolates each gap linearly between the
+    surrounding finite values, and ``"seasonal"`` replaces every missing
+    observation with the mean of the finite values sharing its seasonal
+    phase (a missing Monday is filled with the average Monday), which
+    requires ``seasonal_period``. Forward, backward, and linear imputation
+    leave edge gaps unfilled because no value exists on one side of them;
+    seasonal imputation covers the whole series since the phase means use
+    every finite observation. A series without missing values is returned
+    unchanged.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if observed.size == 0:
+        raise ValueError("values must not be empty")
+    if not np.all(np.isnan(observed) | np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers or NaN gaps")
+    if np.all(np.isnan(observed)):
+        raise ValueError(
+            "values must contain at least one non-missing observation"
+        )
+    if method not in {"forward", "backward", "linear", "seasonal"}:
+        raise ValueError(
+            "method must be 'forward', 'backward', 'linear', or 'seasonal'"
+        )
+    if method == "seasonal":
+        if seasonal_period is None:
+            raise ValueError("seasonal imputation requires seasonal_period")
+        if (
+            isinstance(seasonal_period, bool)
+            or not isinstance(seasonal_period, int)
+            or seasonal_period < 2
+        ):
+            raise ValueError("seasonal_period must be an integer of at least 2")
+    elif seasonal_period is not None:
+        raise ValueError("seasonal_period is only used with method='seasonal'")
+
+    result = observed.copy()
+    missing = np.isnan(observed)
+    if not np.any(missing):
+        return result
+
+    if method == "forward":
+        last = np.nan
+        for i in range(observed.size):
+            if not np.isnan(observed[i]):
+                last = observed[i]
+            else:
+                result[i] = last
+        return result
+
+    if method == "backward":
+        next_value = np.nan
+        for i in range(observed.size - 1, -1, -1):
+            if not np.isnan(observed[i]):
+                next_value = observed[i]
+            else:
+                result[i] = next_value
+        return result
+
+    if method == "linear":
+        for start, end in _nan_runs(observed):
+            if start == 0 or end == observed.size:
+                continue
+            left = observed[start - 1]
+            right = observed[end]
+            fill = np.linspace(left, right, end - start + 2)[1:-1]
+            result[start:end] = fill
+        return result
+
+    period = int(seasonal_period)
+    finite = ~np.isnan(observed)
+    positions = np.arange(observed.size)
+    phase_means = np.array(
+        [
+            float(np.mean(observed[(positions % period == phase) & finite]))
+            for phase in range(period)
+        ]
+    )
+    global_mean = float(np.mean(observed[finite]))
+    phase_means = np.where(np.isnan(phase_means), global_mean, phase_means)
+    result[missing] = phase_means[positions[missing] % period]
+    return result
+
+
+def _nan_runs(observed):
+    """Yield (start, end) half-open index ranges of consecutive NaN values."""
+
+    size = observed.size
+    index = 0
+    while index < size:
+        if np.isnan(observed[index]):
+            start = index
+            while index < size and np.isnan(observed[index]):
+                index += 1
+            yield start, index
+        else:
+            index += 1
+
+
 def boxcox_transform(values, lmbda=None):
     """Apply the Box-Cox power transform, estimating lambda when omitted.
 
