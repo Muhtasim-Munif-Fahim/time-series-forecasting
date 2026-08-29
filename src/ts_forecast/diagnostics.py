@@ -1,8 +1,9 @@
-"""Stationarity and unit-root diagnostics for time series."""
+"""Stationarity and trend diagnostics for time series."""
 
 import warnings
 
 import numpy as np
+from scipy.stats import norm
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 
@@ -95,6 +96,72 @@ def kpss_test(values, regression="c", nlags="auto", alpha=0.05):
         "usedlag": int(usedlag),
         "critical_values": {level: float(value) for level, value in critical_values.items()},
         "stationary": bool(p_value >= alpha),
+    }
+
+
+def mann_kendall_test(values, alpha=0.05):
+    """Run the non-parametric Mann-Kendall trend test on a series.
+
+    The test counts how many later observations exceed earlier ones minus
+    how many fall below them, giving Kendall's S. Under the no-trend null
+    S has expected value zero and its variance accounts for tied values,
+    so the continuity-corrected statistic is referred to the standard
+    normal distribution. The verdict reports ``"increasing"`` or
+    ``"decreasing"`` when the two-sided p-value falls below ``alpha`` and
+    ``"no trend"`` otherwise. Unlike :func:`adf_test` and
+    :func:`kpss_test`, which test stationarity, this tests monotonic trend
+    directly and needs no distributional assumption about the data.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if observed.size < 10:
+        raise ValueError(
+            "at least ten observations are required for the Mann-Kendall test"
+        )
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    if np.all(observed == observed[0]):
+        raise ValueError("values must not be constant")
+
+    n = observed.size
+    statistic = 0.0
+    for i in range(n - 1):
+        statistic += float(np.sum(np.sign(observed[i + 1 :] - observed[i])))
+
+    _, counts = np.unique(observed, return_counts=True)
+    tie_term = float(np.sum(counts * (counts - 1.0) * (2.0 * counts + 5.0)))
+    variance = (n * (n - 1.0) * (2.0 * n + 5.0) - tie_term) / 18.0
+
+    if variance > 0:
+        if statistic > 0:
+            z_score = (statistic - 1.0) / np.sqrt(variance)
+        elif statistic < 0:
+            z_score = (statistic + 1.0) / np.sqrt(variance)
+        else:
+            z_score = 0.0
+        p_value = float(2.0 * norm.sf(abs(z_score)))
+    else:
+        z_score = 0.0
+        p_value = 1.0
+
+    total_pairs = 0.5 * n * (n - 1)
+    tied_share = float(np.sum(counts * (counts - 1.0))) / 2.0
+    denominator = total_pairs - tied_share
+    tau = float(statistic / denominator) if denominator > 0 else 0.0
+
+    if p_value < alpha:
+        verdict = "increasing" if statistic > 0 else "decreasing"
+    else:
+        verdict = "no trend"
+    return {
+        "tau": tau,
+        "p_value": p_value,
+        "s": float(statistic),
+        "var_s": float(variance),
+        "trend": verdict,
+        "alpha": float(alpha),
     }
 
 
