@@ -1,7 +1,10 @@
 """Stationarity and unit-root diagnostics for time series."""
 
+import warnings
+
 import numpy as np
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tools.sm_exceptions import InterpolationWarning
+from statsmodels.tsa.stattools import adfuller, kpss
 
 
 def adf_test(values, maxlag=None, regression="c", autolag="AIC", alpha=0.05):
@@ -47,6 +50,51 @@ def adf_test(values, maxlag=None, regression="c", autolag="AIC", alpha=0.05):
         "nobs": int(nobs),
         "critical_values": {level: float(value) for level, value in critical_values.items()},
         "stationary": bool(p_value < alpha),
+    }
+
+
+def kpss_test(values, regression="c", nlags="auto", alpha=0.05):
+    """Run the KPSS stationarity test on a series.
+
+    KPSS tests the null hypothesis that the series is stationary (level
+    stationarity with ``regression="c"``, trend stationarity with
+    ``regression="ct"``), the opposite null to :func:`adf_test`. Rejecting
+    KPSS while failing to reject ADF is the classic evidence of a
+    unit-root series, so the two tests are best read together.
+    ``nlags`` fixes the number of lags for the Newey-West estimate of the
+    long-run variance, with ``"auto"`` choosing by the standard heuristic.
+    The verdict marks the series stationary when the p-value stays at or
+    above ``alpha`` (i.e. the stationarity null is not rejected). The
+    statistic occasionally lands outside the p-value look-up table; the
+    returned p-value then saturates at the nearest extreme (``0.01`` or
+    ``0.1``) and the routine warns only about that censoring.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if observed.size < 10:
+        raise ValueError("at least ten observations are required for the KPSS test")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if regression not in {"c", "ct"}:
+        raise ValueError("regression must be 'c' or 'ct'")
+    if nlags not in {"auto", "legacy"} and (
+        isinstance(nlags, bool) or not isinstance(nlags, int) or nlags < 0
+    ):
+        raise ValueError("nlags must be 'auto', 'legacy', or a non-negative integer")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InterpolationWarning)
+        statistic, p_value, usedlag, critical_values = kpss(
+            observed, regression=regression, nlags=nlags
+        )
+    return {
+        "statistic": float(statistic),
+        "p_value": float(p_value),
+        "usedlag": int(usedlag),
+        "critical_values": {level: float(value) for level, value in critical_values.items()},
+        "stationary": bool(p_value >= alpha),
     }
 
 
