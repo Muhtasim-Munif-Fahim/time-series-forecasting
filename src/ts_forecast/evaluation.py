@@ -271,6 +271,80 @@ def seasonal_strength(values, seasonal_period):
     }
 
 
+def seasonal_decompose(values, seasonal_period, model="additive"):
+    """Decompose a series into trend, seasonal, and residual components.
+
+    Classical decomposition estimates the trend with a centered moving
+    average, averages the detrended values by seasonal phase into indices,
+    and treats whatever remains as residual noise. For ``model="additive"``
+    the seasonal indices add to the trend and the residual is
+    ``values - trend - seasonal``; for ``model="multiplicative"`` the
+    indices multiply the trend and the residual is
+    ``values / (trend * seasonal)``, which requires strictly positive
+    values. This is the classic method and differs from
+    :func:`seasonal_strength`, which compresses the same machinery into
+    variance-ratio scores: here the three aligned component series are
+    returned for plotting and further analysis. The trend is undefined at
+    the series edges, so the returned arrays carry NaN there and every
+    component matches the input length.
+    """
+
+    if seasonal_period < 2:
+        raise ValueError("seasonal_period must be at least 2")
+    if model not in {"additive", "multiplicative"}:
+        raise ValueError("model must be 'additive' or 'multiplicative'")
+    observed = np.asarray(values, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    period = int(seasonal_period)
+    if observed.size < 2 * period:
+        raise ValueError("need at least two complete seasonal periods")
+    if np.all(observed == observed[0]):
+        raise ValueError("values must not be constant")
+    if model == "multiplicative" and np.any(observed <= 0):
+        raise ValueError(
+            "multiplicative decomposition requires strictly positive values"
+        )
+
+    smoothed = np.convolve(observed, np.full(period, 1.0 / period), mode="valid")
+    if period % 2 == 0:
+        trend_short = 0.5 * (smoothed[:-1] + smoothed[1:])
+    else:
+        trend_short = smoothed
+    offset = (observed.size - trend_short.size) // 2
+
+    trend = np.full(observed.size, np.nan)
+    trend[offset : offset + trend_short.size] = trend_short
+
+    detrended = observed[offset : offset + trend_short.size]
+    if model == "multiplicative":
+        detrended = detrended / trend_short
+    else:
+        detrended = detrended - trend_short
+
+    phases = np.arange(offset, offset + trend_short.size) % period
+    seasonal_short = np.array(
+        [detrended[phases == phase].mean() for phase in range(period)]
+    )
+    if model == "multiplicative":
+        seasonal_short = seasonal_short / seasonal_short.mean()
+    else:
+        seasonal_short = seasonal_short - seasonal_short.mean()
+
+    seasonal = np.full(observed.size, np.nan)
+    seasonal[offset : offset + trend_short.size] = seasonal_short[phases]
+
+    if model == "multiplicative":
+        residual_short = detrended / seasonal_short[phases]
+    else:
+        residual_short = detrended - seasonal_short[phases]
+
+    residual = np.full(observed.size, np.nan)
+    residual[offset : offset + trend_short.size] = residual_short
+
+    return {"trend": trend, "seasonal": seasonal, "residual": residual}
+
+
 def mean_absolute_scaled_error(y_true, y_pred, y_train, seasonal_period=1):
     """Return MASE using an in-sample seasonal-naive scaling error.
 
