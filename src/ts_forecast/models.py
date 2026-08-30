@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
@@ -367,6 +368,91 @@ def naive2_forecast(train, target_col, steps=1, seasonal_period=None):
         phases = (values.size - 1 + horizon) % len(indices)
         forecast = forecast + indices[phases]
     return forecast
+
+
+def baseline_prediction_interval(
+    train, target_col, steps, method="naive", seasonal_period=None, coverage=0.9
+):
+    """Build step-ahead prediction intervals around a baseline forecast.
+
+    Naive, seasonal-naive, and drift forecasts carry no native uncertainty,
+    yet they are the benchmarks every serious model must beat, so cheap
+    intervals around them are useful sanity checks. The in-sample
+    one-step-ahead residuals supply a single error scale ``sigma`` and every
+    horizon widens the interval with the standard textbook factor:
+    ``sqrt(h)`` for the naive and drift methods, and ``sqrt(k + 1)`` with
+    ``k = (h - 1) // seasonal_period`` for the seasonal naive method. The
+    drift forecast extrapolates ``last + slope * h`` with the slope fitted
+    across the whole training history, matching the classical random walk
+    with drift. Intervals are ``forecast +/- z * sigma * factor`` at the
+    requested ``coverage`` and collapse to the point forecast when the
+    in-sample errors are zero. ``method`` must be one of ``"naive"``,
+    ``"seasonal_naive"`` (which requires ``seasonal_period``), and
+    ``"drift"``.
+    """
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if method not in {"naive", "seasonal_naive", "drift"}:
+        raise ValueError("method must be 'naive', 'seasonal_naive', or 'drift'")
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+
+    if method == "seasonal_naive":
+        if seasonal_period is None:
+            raise ValueError("seasonal_naive method requires seasonal_period")
+        if (
+            isinstance(seasonal_period, bool)
+            or not isinstance(seasonal_period, int)
+            or seasonal_period < 2
+        ):
+            raise ValueError("seasonal_period must be an integer of at least 2")
+        period = int(seasonal_period)
+        if values.size < 2 * period:
+            raise ValueError(
+                "training data must contain at least two complete seasonal periods"
+            )
+        residuals = values[period:] - values[:-period]
+        forecast = np.resize(values[-period:], steps)
+        factors = np.sqrt((np.arange(1, steps + 1) - 1) // period + 1)
+    elif method == "drift":
+        if seasonal_period is not None:
+            raise ValueError(
+                "seasonal_period is only used with method='seasonal_naive'"
+            )
+        if values.size < 3:
+            raise ValueError("drift method requires at least three observations")
+        slope = (values[-1] - values[0]) / (values.size - 1)
+        residuals = values[1:] - (values[:-1] + slope)
+        horizon = np.arange(1, steps + 1, dtype=float)
+        forecast = values[-1] + slope * horizon
+        factors = np.sqrt(horizon * (1.0 + horizon / values.size))
+    else:
+        if seasonal_period is not None:
+            raise ValueError(
+                "seasonal_period is only used with method='seasonal_naive'"
+            )
+        if values.size < 2:
+            raise ValueError("naive method requires at least two observations")
+        residuals = values[1:] - values[:-1]
+        forecast = np.full(steps, float(values[-1]))
+        factors = np.sqrt(np.arange(1, steps + 1))
+
+    sigma = float(np.std(residuals, ddof=1))
+    critical = float(norm.ppf(0.5 + coverage / 2.0))
+    half_width = critical * sigma * factors
+    return {
+        "forecast": forecast,
+        "lower": forecast - half_width,
+        "upper": forecast + half_width,
+    }
 
 
 def _ses_forecast_level(values):
