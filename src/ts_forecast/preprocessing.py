@@ -5,6 +5,8 @@ import numpy as np
 from pathlib import Path
 from scipy.stats import boxcox as _scipy_boxcox
 
+from ts_forecast.evaluation import seasonal_decompose
+
 
 def load_csv(path, date_col, target_col, freq=None):
     df = pd.read_csv(path, parse_dates=[date_col])
@@ -253,3 +255,75 @@ def boxcox_forecast(train, target_col, steps, model_fn, lmbda=None):
     if prediction.size != steps:
         raise ValueError("model_fn must return exactly steps predictions")
     return inverse_boxcox(prediction, fitted)
+
+
+def detect_outliers(values, seasonal_period=None, window=7, threshold=3.0):
+    """Flag point anomalies that exceed a robust scale of the local deviation.
+
+    Two modes cover trended and seasonal series. With ``seasonal_period``
+    the series is classically decomposed and the residual (observed minus
+    trend minus season) is scored, so both a smooth trend and a repeating
+    seasonal pattern are removed before flagging; without it the deviation
+    from a centered rolling median of width ``window`` plays that role.
+    Every score divides its deviation by a robust scale built from the
+    median absolute deviation, falling back to the standard deviation when
+    the MAD is zero, and points whose score exceeds ``threshold`` are
+    flagged. Scores are ``nan`` where neither the rolling median nor the
+    decomposition trend is defined (the series edges), and those points are
+    never flagged. A series with constant local structure yields zero
+    outliers.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if observed.size == 0:
+        raise ValueError("values must not be empty")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or threshold <= 0
+    ):
+        raise ValueError("threshold must be a positive number")
+    if isinstance(window, bool) or not isinstance(window, int) or window < 3:
+        raise ValueError("window must be an integer of at least 3")
+
+    scores = np.full(observed.size, np.nan)
+
+    if seasonal_period is not None:
+        if (
+            isinstance(seasonal_period, bool)
+            or not isinstance(seasonal_period, int)
+            or seasonal_period < 2
+        ):
+            raise ValueError("seasonal_period must be an integer of at least 2")
+        period = int(seasonal_period)
+        if observed.size < 2 * period:
+            raise ValueError(
+                "seasonal outlier detection requires at least two complete periods"
+            )
+        residual = seasonal_decompose(observed, period)["residual"]
+        finite = np.isfinite(residual)
+        center = float(np.median(residual[finite]))
+        mad = float(np.median(np.abs(residual[finite] - center)))
+        scale = 1.4826 * mad if mad > 0 else float(np.std(residual[finite], ddof=1))
+        if scale > 0:
+            scores[finite] = (residual[finite] - center) / scale
+    else:
+        if window > observed.size:
+            raise ValueError("window must not exceed the number of observations")
+        rolling = (
+            pd.Series(observed).rolling(window, center=True).median().to_numpy()
+        )
+        finite = np.isfinite(rolling)
+        deviation = observed[finite] - rolling[finite]
+        center = float(np.median(deviation))
+        mad = float(np.median(np.abs(deviation - center)))
+        scale = 1.4826 * mad if mad > 0 else float(np.std(deviation, ddof=1))
+        if scale > 0:
+            scores[finite] = (deviation - center) / scale
+
+    return {
+        "outlier": scores > threshold,
+        "score": scores,
+    }
