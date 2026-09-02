@@ -810,3 +810,164 @@ def recalibrate_conformal_intervals(
     upper = point_forecast + scaled_radius
 
     return lower, upper, scale_factor, empirical_coverage
+
+
+def forecast_diagnostics_bundle(
+    y_true,
+    y_pred,
+    *,
+    seasonal_period: int = 1,
+    max_lag: int = 10,
+    alpha: float = 0.05,
+    baseline: str = "naive",
+    train=None,
+):
+    """Compute a one-shot forecast-diagnostics bundle.
+
+    Combines the standard point-forecast metrics (MAE, RMSE, MAPE, bias,
+    sMAPE), residual autocorrelation lags, Ljung-Box test, and the
+    forecast-skill score against an in-sample baseline forecast (naive or
+    seasonal-naive). The shape is a single dict so triage dashboards and
+    CLI outputs can show every relevant diagnostic for one run without
+    threading half a dozen function calls together.
+
+    ``seasonal_period`` controls the seasonal-naive baseline and feeds into
+    the residual diagnostics; ``max_lag`` is the maximum lag included in
+    the autocorrelation and Ljung-Box computations; ``alpha`` is the
+    Ljung-Box significance level; ``train`` provides the in-sample series
+    for the baseline forecast and must be supplied when ``baseline`` is
+    not ``"naive"``.
+    """
+
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be at least 1")
+    if max_lag < 1:
+        raise ValueError("max_lag must be at least 1")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    if baseline not in {"naive", "seasonal_naive"}:
+        raise ValueError("baseline must be 'naive' or 'seasonal_naive'")
+    if baseline == "seasonal_naive" and train is None:
+        raise ValueError("train is required when baseline='seasonal_naive'")
+
+    true_arr = np.asarray(y_true, dtype=float).ravel()
+    pred_arr = np.asarray(y_pred, dtype=float).ravel()
+    if true_arr.size != pred_arr.size:
+        raise ValueError("y_true and y_pred must have the same length")
+    if true_arr.size == 0:
+        raise ValueError("y_true and y_pred must not be empty")
+
+    bundle: dict[str, object] = {
+        "metrics": compute_metrics(true_arr, pred_arr),
+        "bias": forecast_bias(true_arr, pred_arr),
+        "smape": symmetric_mean_absolute_percentage_error(true_arr, pred_arr),
+        "residual_autocorrelation": residual_autocorrelation(
+            true_arr, pred_arr, max_lag=max_lag
+        ),
+        "ljung_box": ljung_box_test(
+            true_arr - pred_arr, lags=min(max_lag, max(true_arr.size - 1, 1)), alpha=alpha
+        ),
+    }
+    tests = bundle["ljung_box"].get("tests") or []
+    bundle["min_residual_p_value"] = min(
+        (float(test["p_value"]) for test in tests), default=float("nan")
+    )
+
+    if baseline == "naive":
+        naive = np.concatenate([[true_arr[0]], true_arr[:-1]])
+    else:
+        period = max(int(seasonal_period), 1)
+        naive = np.concatenate(
+            [true_arr[:period], true_arr[:-period]]
+        )
+
+    bundle["skill_score"] = forecast_skill_score(
+        true_arr, pred_arr, naive, score="mae"
+    )
+
+    return bundle
+
+
+def coverage_straddle_test(
+    intervals,
+    nominal: float = 0.9,
+    *,
+    alpha: float = 0.05,
+    min_n: int = 10,
+):
+    """Test whether the empirical coverage of (lower, upper) intervals matches a nominal rate.
+
+    ``intervals`` is a sequence of precomputed (lower, upper) pairs. The test
+    computes the empirical coverage as the share of finite intervals whose
+    lower bound does not exceed its upper bound, then runs a two-sided
+    proportion test against ``nominal`` (default 0.9). Returns the
+    z-statistic, the two-sided p-value, and a string verdict so callers can
+    act without recomputing.
+
+    Parameters
+    ----------
+    intervals : sequence of length-2 sequences
+        Precomputed (lower, upper) pairs.
+    nominal : float
+        Target coverage in (0, 1).
+    alpha : float
+        Significance level used to translate the p-value into a verdict.
+        Values below ``alpha`` flag the deviation as significant.
+    min_n : int
+        Minimum number of intervals required to run the test; below this
+        we return ``"insufficient"`` without a z-score.
+    """
+    if not 0.0 < nominal < 1.0:
+        raise ValueError("nominal must be strictly between 0 and 1")
+    if min_n < 1:
+        raise ValueError("min_n must be at least 1")
+
+    pairs = [tuple(interval) for interval in intervals]
+    n = len(pairs)
+    if n < min_n:
+        return {
+            "n": n,
+            "observed_coverage": float("nan"),
+            "z": float("nan"),
+            "p_value": float("nan"),
+            "verdict": "insufficient",
+        }
+
+    covered = 0
+    for lower, upper in pairs:
+        try:
+            lo = float(lower)
+            hi = float(upper)
+        except (TypeError, ValueError):
+            continue
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            continue
+        if lo <= hi:
+            covered += 1
+    observed = covered / n
+
+    if nominal <= 0.0 or nominal >= 1.0:
+        raise ValueError("nominal must be strictly between 0 and 1")
+    se = float(np.sqrt(nominal * (1.0 - nominal) / n))
+    if se == 0.0:
+        z = 0.0
+        p_value = 1.0
+    else:
+        z = (observed - nominal) / se
+        # Two-sided p-value from the standard normal survival function.
+        p_value = 2.0 * float(norm.sf(abs(z)))
+
+    if p_value > alpha:
+        verdict = "on-target"
+    elif observed < nominal:
+        verdict = "under-covered"
+    else:
+        verdict = "over-covered"
+
+    return {
+        "n": n,
+        "observed_coverage": float(observed),
+        "z": float(z),
+        "p_value": float(p_value),
+        "verdict": verdict,
+    }
