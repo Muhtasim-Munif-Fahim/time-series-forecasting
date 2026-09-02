@@ -919,6 +919,8 @@ def coverage_straddle_test(
     """
     if not 0.0 < nominal < 1.0:
         raise ValueError("nominal must be strictly between 0 and 1")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
     if min_n < 1:
         raise ValueError("min_n must be at least 1")
 
