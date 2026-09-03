@@ -1212,4 +1212,72 @@ def select_window_size_cv(
         "metric": metric,
     }
 
+def prediction_intervals_with_drift(
+    calibration_true,
+    calibration_pred,
+    heldout_true,
+    heldout_pred,
+    forecast,
+    coverage: float = 0.9,
+    *,
+    drift_alpha: float = 0.05,
+):
+    """Build a conformal interval that compensates for held-out drift.
+
+    Standard split-conformal intervals assume exchangeability between
+    calibration and held-out data. When the held-out errors are larger
+    (e.g. the forecast drift has grown), a one-sided t-test on the
+    difference between the held-out and calibration error distributions
+    flags a significant drift at ``drift_alpha``; when it does, the
+    conformal radius is scaled by the held-out-vs-calibration mean-error
+    ratio so the band grows in proportion. When no drift is detected the
+    helper falls back to the standard split-conformal radius.
+    """
+    import numpy as _np
+    from scipy import stats as _stats
+
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    if not 0.0 < drift_alpha < 1.0:
+        raise ValueError("drift_alpha must be strictly between 0 and 1")
+
+    cal_true = _np.asarray(calibration_true, dtype=float).ravel()
+    cal_pred = _np.asarray(calibration_pred, dtype=float).ravel()
+    ho_true = _np.asarray(heldout_true, dtype=float).ravel()
+    ho_pred = _np.asarray(heldout_pred, dtype=float).ravel()
+    point = _np.asarray(forecast, dtype=float).ravel()
+
+    if cal_true.size != cal_pred.size:
+        raise ValueError("calibration_true and calibration_pred must have the same length")
+    if ho_true.size != ho_pred.size:
+        raise ValueError("heldout_true and heldout_pred must have the same length")
+
+    cal_scores = _np.abs(cal_true - cal_pred)
+    ho_scores = _np.abs(ho_true - ho_pred)
+    if cal_scores.size == 0 or ho_scores.size == 0:
+        raise ValueError("calibration and held-out sets must be non-empty")
+
+    cal_mean = float(_np.mean(cal_scores))
+    ho_mean = float(_np.mean(ho_scores))
+    t_stat, p_value = _stats.ttest_ind(ho_scores, cal_scores, equal_var=False)
+    drift_detected = bool(p_value < drift_alpha and ho_mean > cal_mean)
+    if drift_detected:
+        scale = ho_mean / cal_mean if cal_mean > 0 else 1.0
+        scale = max(scale, 1.0)
+    else:
+        scale = 1.0
+
+    radius = float(_np.quantile(cal_scores, coverage, method="higher"))
+    scaled_radius = radius * scale
+    return {
+        "lower": point - scaled_radius,
+        "upper": point + scaled_radius,
+        "radius": float(scaled_radius),
+        "calibration_radius": float(radius),
+        "drift_scale": float(scale),
+        "drift_detected": drift_detected,
+        "t_statistic": float(t_stat),
+        "p_value": float(p_value),
+    }
+
 
