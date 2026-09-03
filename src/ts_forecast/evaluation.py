@@ -1126,4 +1126,90 @@ def bootstrap_forecast_intervals(
         "alpha": float(alpha),
     }
 
+def select_window_size_cv(
+    values,
+    model_fn,
+    *,
+    candidate_windows,
+    step: int = 1,
+    horizon: int = 1,
+    initial: int | None = None,
+    metric: str = "mae",
+):
+    """Pick a rolling-origin window size by expanding-window cross-validation.
+
+    ``values`` is the training series (one-dimensional). ``model_fn`` is a
+    callable ``(train_slice, steps)`` that returns a forecast array.
+    ``candidate_windows`` is an iterable of integer window sizes to try.
+    For each candidate the helper performs a rolling-origin CV with
+    ``initial`` observations (defaults to ``max(candidates)``), advances
+    the origin by ``step`` observations each fold, evaluates the chosen
+    ``metric`` (``mae`` or ``rmse``) on the ``horizon``-step-ahead
+    forecast, and reports the mean across folds.
+
+    Returns ``{"best_window": int, "scores": {int: float}, "metric": str}``
+    so the caller can inspect the score curve as well as the winner.
+    """
+    import numpy as _np
+
+    array = _np.asarray(values, dtype=float).ravel()
+    if array.size == 0:
+        raise ValueError("values must be non-empty")
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    if step < 1:
+        raise ValueError("step must be at least 1")
+    if metric not in {"mae", "rmse"}:
+        raise ValueError("metric must be 'mae' or 'rmse'")
+
+    candidates = sorted({int(window) for window in candidate_windows if int(window) >= 1})
+    if not candidates:
+        raise ValueError("at least one positive window is required")
+    max_window = max(candidates)
+    if initial is None:
+        initial = max_window
+    if initial + horizon > array.size:
+        raise ValueError("not enough observations for one backtest fold")
+    if max_window > array.size - horizon:
+        raise ValueError("largest candidate window is too large for the series")
+
+    def _loss(actual, predicted) -> float:
+        diff = actual - predicted
+        if metric == "mae":
+            return float(_np.mean(_np.abs(diff)))
+        return float(_np.sqrt(_np.mean(diff ** 2)))
+
+    scores: dict[int, float] = {}
+    for window in candidates:
+        fold_losses: list[float] = []
+        origins = list(range(initial, array.size - horizon + 1, step))
+        for origin in origins:
+            if window >= origin:
+                start = 0
+            else:
+                start = origin - window
+            train = array[start:origin]
+            try:
+                forecast = _np.asarray(model_fn(train, horizon), dtype=float).ravel()
+            except Exception:
+                continue
+            if forecast.size != horizon:
+                continue
+            actual = array[origin:origin + horizon]
+            fold_losses.append(_loss(actual, forecast))
+        if not fold_losses:
+            scores[window] = float("nan")
+        else:
+            scores[window] = float(_np.mean(fold_losses))
+
+    finite_pairs = [(window, value) for window, value in scores.items() if value == value]
+    if not finite_pairs:
+        raise ValueError("no candidate produced a valid CV score")
+    best_window = min(finite_pairs, key=lambda pair: pair[1])[0]
+    return {
+        "best_window": int(best_window),
+        "scores": {int(window): float(value) for window, value in scores.items()},
+        "metric": metric,
+    }
+
 
