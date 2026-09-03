@@ -973,3 +973,92 @@ def coverage_straddle_test(
         "p_value": float(p_value),
         "verdict": verdict,
     }
+
+
+
+def granger_causality_matrix(
+    frame,
+    columns,
+    *,
+    max_lag: int = 4,
+    significance: float = 0.05,
+):
+    """Return a pairwise Granger-causality p-value matrix.
+
+    The function tests whether the past values of one numeric column
+    help forecast another via ``statsmodels.tsa.stattools.grangercausalitytests``.
+    The matrix is asymmetric: ``matrix[i][j]`` is the p-value of the
+    hypothesis that column ``j`` Granger-causes column ``i``. Self-causation
+    is filled with NaN. The result also carries a derived ``significant``
+    matrix and a flat ``edges`` list of (cause, effect, p_value) tuples for
+    every pair whose p-value falls below ``significance``.
+
+    ``frame`` must be a pandas DataFrame; ``columns`` restricts the test to
+    a chosen subset (the order is preserved in the output matrix). All
+    columns are differenced once internally so the test is applied to
+    stationary series, which matches the stattools default. Missing values
+    are dropped pairwise per pair.
+    """
+    import pandas as _pd
+
+    if not isinstance(frame, _pd.DataFrame):
+        raise ValueError("frame must be a pandas DataFrame")
+    if max_lag < 1:
+        raise ValueError("max_lag must be at least 1")
+    if not 0.0 < significance < 1.0:
+        raise ValueError("significance must be strictly between 0 and 1")
+
+    selected = [str(name) for name in columns]
+    missing = [name for name in selected if name not in frame.columns]
+    if missing:
+        raise ValueError(
+            "unknown columns not present in frame: " + ", ".join(missing)
+        )
+
+    from statsmodels.tsa.stattools import grangercausalitytests as _granger
+
+    n = len(selected)
+    matrix: list[list[float]] = [[float("nan")] * n for _ in range(n)]
+    for i, effect in enumerate(selected):
+        for j, cause in enumerate(selected):
+            if i == j:
+                continue
+            sub = frame[[effect, cause]].dropna()
+            if sub.shape[0] <= max_lag + 1:
+                continue
+            try:
+                result = _granger(sub[[effect, cause]], maxlag=max_lag, verbose=False)
+            except Exception:
+                continue
+            try:
+                tests = result[int(max_lag)][0]["ssr_ftest"]
+            except (KeyError, IndexError, TypeError):
+                continue
+            matrix[i][j] = float(tests[1])
+
+    significant: list[list[bool]] = [
+        [False if (i == j or matrix[i][j] != matrix[i][j]) else matrix[i][j] < significance
+         for j in range(n)]
+        for i in range(n)
+    ]
+    edges: list[tuple[str, str, float]] = []
+    for i, effect in enumerate(selected):
+        for j, cause in enumerate(selected):
+            if i == j:
+                continue
+            p_value = matrix[i][j]
+            if p_value != p_value:
+                continue
+            if p_value < significance:
+                edges.append((cause, effect, float(p_value)))
+    edges.sort(key=lambda row: row[2])
+    return {
+        "columns": selected,
+        "max_lag": int(max_lag),
+        "significance": float(significance),
+        "p_value_matrix": matrix,
+        "significant_matrix": significant,
+        "edges": edges,
+    }
+
+
