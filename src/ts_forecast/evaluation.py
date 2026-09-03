@@ -1061,4 +1061,69 @@ def granger_causality_matrix(
         "edges": edges,
     }
 
+def bootstrap_forecast_intervals(
+    residuals,
+    forecast,
+    *,
+    n_bootstrap: int = 1000,
+    coverage: float = 0.9,
+    seed: int | None = None,
+    block_size: int = 1,
+):
+    """Return a symmetric prediction interval by resampling forecast residuals.
+
+    ``residuals`` is the held-out error series (y_true - y_pred); the helper
+    draws ``n_bootstrap`` bootstrap replicates, builds an empirical
+    residual distribution, and returns the ``coverage``-quantile half-width
+    around the point forecast. ``block_size`` enables a moving-block
+    bootstrap so dependent residuals are not artificially decorrelated;
+    when ``block_size`` is 1 the standard residual bootstrap is used.
+
+    Returns ``{"lower": ..., "upper": ..., "half_width": ..., "alpha": ...}``
+    so the caller can choose how to render the band. ``coverage`` is the
+    two-sided coverage (0.9 -> symmetric 5% tails on each side).
+    """
+    import numpy as _np
+
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be at least 1")
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1")
+
+    residuals_array = _np.asarray(residuals, dtype=float).ravel()
+    finite = _np.isfinite(residuals_array)
+    if not finite.all():
+        residuals_array = residuals_array[finite]
+    if residuals_array.size < block_size:
+        raise ValueError("not enough residuals for the requested block size")
+    if block_size > residuals_array.size:
+        raise ValueError("block_size cannot exceed the number of residuals")
+
+    rng = _np.random.default_rng(seed)
+    n = residuals_array.size
+    boot_sums = _np.zeros(n_bootstrap, dtype=float)
+    for b in range(n_bootstrap):
+        if block_size == 1:
+            sample = rng.choice(residuals_array, size=n, replace=True)
+        else:
+            starts = rng.integers(0, n - block_size + 1, size=int(_np.ceil(n / block_size)))
+            blocks = [residuals_array[s:s + block_size] for s in starts]
+            sample = _np.concatenate(blocks)[:n]
+        boot_sums[b] = float(_np.mean(sample))
+
+    alpha = (1.0 - coverage) / 2.0
+    lower_q = float(_np.quantile(boot_sums, alpha))
+    upper_q = float(_np.quantile(boot_sums, 1.0 - alpha))
+    half_width = max(upper_q - float(_np.mean(residuals_array)),
+                     float(_np.mean(residuals_array)) - lower_q)
+    point = _np.asarray(forecast, dtype=float).ravel()
+    return {
+        "lower": point - half_width,
+        "upper": point + half_width,
+        "half_width": float(half_width),
+        "alpha": float(alpha),
+    }
+
 
