@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 
 
@@ -521,10 +522,42 @@ def theta_forecast(train, target_col, steps=1, seasonal_period=None):
 
 
 def forecast_arima(train, target_col, order=(1, 1, 1), steps=1):
-    model = ARIMA(train[target_col].dropna(), order=order)
+    """Forecast with an ARIMA(p, d, q) model fit via statsmodels.
+
+    Returns a numpy array of length ``steps`` so the output is consistent
+    with every other forecast function in this module. ``order`` accepts the
+    standard ``(p, d, q)`` tuple or a ``(p, d, q, P, D, Q, s)`` tuple for
+    seasonal ARIMA; when seasonal terms are supplied they are forwarded to
+    :class:`~statsmodels.tsa.statespace.sarimax.SARIMAX`.
+    """
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+
+    series = train[target_col].dropna()
+    values = np.asarray(series, dtype=float)
+    if values.size < 2:
+        raise ValueError("training data must contain at least two observations")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+
+    if len(order) == 7:
+        p, d, q, P, D, Q, s = order
+        model = SARIMAX(
+            values,
+            order=(p, d, q),
+            seasonal_order=(P, D, Q, s),
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+    else:
+        model = ARIMA(values, order=order)
+
     fitted = model.fit()
     forecast = fitted.forecast(steps=steps)
-    return forecast
+    return np.asarray(forecast, dtype=float)
 
 
 def evaluate_forecast(y_true, y_pred):

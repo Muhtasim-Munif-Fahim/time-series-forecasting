@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from data_generation import generate_time_series
 from preprocessing import create_supervised_data, temporal_split
-from models import naive_forecast, moving_average_forecast, compute_metrics, linear_regression_forecast
+from models import naive_forecast, moving_average_forecast, compute_metrics, linear_regression_forecast, forecast_arima
 
 
 class TestBaselines:
@@ -43,3 +43,37 @@ class TestMLModels:
         split = int(len(X) * 0.8)
         preds, model = linear_regression_forecast(X.iloc[:split], y.iloc[:split], X.iloc[split:])
         assert len(preds) == len(X) - split
+
+
+class TestARIMA:
+    def test_forecast_arima_returns_numpy_array(self):
+        df = generate_time_series(n_points=50)
+        result = forecast_arima(df, "value", steps=5)
+        assert isinstance(result, np.ndarray)
+
+    def test_forecast_arima_correct_length(self):
+        df = generate_time_series(n_points=50)
+        result = forecast_arima(df, "value", steps=3)
+        assert len(result) == 3
+
+    def test_forecast_arima_seasonal_order(self):
+        df = generate_time_series(n_points=100)
+        result = forecast_arima(df, "value", order=(1, 0, 1, 0, 1, 1, 7), steps=4)
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 4
+
+    def test_forecast_arima_validates_steps(self):
+        df = generate_time_series(n_points=50)
+        try:
+            forecast_arima(df, "value", steps=0)
+            assert False, "Expected ValueError"
+        except ValueError:
+            pass
+
+    def test_forecast_arima_validates_target_col(self):
+        df = generate_time_series(n_points=50)
+        try:
+            forecast_arima(df, "nonexistent", steps=1)
+            assert False, "Expected KeyError"
+        except KeyError:
+            pass
