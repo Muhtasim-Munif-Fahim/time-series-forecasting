@@ -1313,3 +1313,50 @@ def directional_accuracy(y_true, y_pred):
     return float(np.mean(matches))
 
 
+def continuous_ranked_probability_score(y_true, forecasts):
+    """Score probabilistic/ensemble forecasts with the CRPS proper scoring rule.
+
+    The continuous ranked probability score rewards a forecast distribution
+    that places probability mass where the observation actually falls and
+    penalises both bias and over-confidence. It is strictly proper, so it
+    cannot be gamed by hedging: the score is minimised in expectation only by
+    the forecaster's true belief. A deterministic (point) forecast is the
+    degenerate one-member ensemble and the score collapses to the absolute
+    error; the ensemble form uses the Hersbach (2000) identity so the
+    empirical CDF of the members is scored exactly. Lower is better, and the
+    score shares the units of the series, which makes it comparable to MAE
+    for calibrating interval and ensemble methods.
+
+    ``forecasts`` may be a 1-D array of point forecasts, in which case the
+    returned value is the mean absolute error, or a 2-D array whose rows are
+    observations and columns are ensemble members.
+    """
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("y_true must contain only finite values")
+    matrix = np.asarray(forecasts, dtype=float)
+    if matrix.ndim == 1:
+        if matrix.shape != observed.shape:
+            raise ValueError("y_true and forecasts must have equal length")
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError("forecasts must contain only finite values")
+        return float(np.mean(np.abs(observed - matrix)))
+    if matrix.ndim != 2:
+        raise ValueError("forecasts must be 1-D or 2-D")
+    if matrix.shape[0] != observed.size:
+        raise ValueError("y_true and forecasts must have equal length")
+    if matrix.shape[1] < 1:
+        raise ValueError("forecasts must contain at least one member")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("forecasts must contain only finite values")
+
+    member_spread = matrix - observed[:, None]
+    per_observation = np.mean(np.abs(member_spread), axis=1)
+    pairwise = np.mean(
+        np.abs(matrix[:, :, None] - matrix[:, None, :]), axis=(1, 2)
+    )
+    scores = per_observation - 0.5 * pairwise
+    return float(np.mean(scores))
+
+
