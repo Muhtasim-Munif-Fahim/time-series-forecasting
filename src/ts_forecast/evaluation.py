@@ -1360,3 +1360,46 @@ def continuous_ranked_probability_score(y_true, forecasts):
     return float(np.mean(scores))
 
 
+def bias_variance_decomposition(y_true, predictions):
+    """Decompose ensemble forecast error into squared bias and variance.
+
+    Given a reference observation and an ensemble of forecasts for each
+    case, the mean squared error of the ensemble mean splits into two
+    additive pieces: the squared bias, how far the average forecast sits
+    from the truth, and the variance, how much the members scatter around
+    their own mean. The decomposition is exact for deterministic forecasts
+    because ``mean_mse`` equals ``squared_bias + variance`` (the spread is
+    measured with the population variance so the identity holds pointwise);
+    the gap below one therefore reports a calibration problem worth chasing
+    with either a better central forecast or a better spread. The breakdown
+    is the standard diagnostic for deciding whether to trust a model's
+    point forecast, shrink an over-dispersed ensemble, or add diversity.
+
+    ``predictions`` is an n-by-m array of m forecasts for each of n cases.
+    Returns ``{"mean_mse", "squared_bias", "variance"}`` in the series units.
+    """
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("y_true must contain only finite values")
+    matrix = np.asarray(predictions, dtype=float)
+    if matrix.ndim != 2:
+        raise ValueError("predictions must be a 2-D array of ensemble forecasts")
+    if matrix.shape[0] != observed.size:
+        raise ValueError("y_true and predictions must have equal length")
+    if matrix.shape[1] < 1:
+        raise ValueError("predictions must contain at least one forecast per case")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("predictions must contain only finite values")
+
+    mean_prediction = matrix.mean(axis=1)
+    squared_bias = float(np.mean((mean_prediction - observed) ** 2))
+    variance = float(np.mean(matrix.var(axis=1)))
+    mean_mse = float(np.mean(np.mean((matrix - observed[:, None]) ** 2, axis=1)))
+    return {
+        "mean_mse": mean_mse,
+        "squared_bias": squared_bias,
+        "variance": variance,
+    }
+
+
