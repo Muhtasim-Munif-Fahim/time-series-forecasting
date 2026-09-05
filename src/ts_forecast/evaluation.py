@@ -1281,3 +1281,35 @@ def prediction_intervals_with_drift(
     }
 
 
+def directional_accuracy(y_true, y_pred):
+    """Score how often a forecast calls the direction of change correctly.
+
+    Whether a series goes up or down is often the actionable question even
+    when the exact level is noisy, so this compares the sign of the
+    step-to-step change in the observations with the sign of the change in
+    the predictions. The first observation is excluded because it has no
+    predecessor; every other position votes ``1`` when the two directions
+    agree and ``0`` otherwise. A flat step in either series is a tie: two
+    unchanged values agree, but an unchanged value versus a move does not.
+    The result is the mean vote, so ``1.0`` means the forecast turns every
+    corner right, ``0.5`` is chance level for a binary direction, and ``0.0``
+    means it is almost always wrong. Unlike the magnitude metrics in this
+    module it is insensitive to scaling, which makes it a useful complement
+    to MAE or MASE for trending or seasonal series.
+    """
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size < 2:
+        raise ValueError("at least two observations are required")
+    if not np.all(np.isfinite(np.concatenate([observed, predicted]))):
+        raise ValueError("y_true and y_pred must contain only finite values")
+
+    actual_change = np.diff(observed)
+    predicted_change = np.diff(predicted)
+    matches = np.sign(actual_change) == np.sign(predicted_change)
+    return float(np.mean(matches))
+
+
