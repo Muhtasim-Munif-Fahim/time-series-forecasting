@@ -1517,3 +1517,88 @@ def forecast_accuracy(y_true, y_pred, y_train=None, seasonal_period=1):
 
     return metrics
 
+
+def acf_pacf(values, n_lags=40, alpha=0.05):
+    """Compute the sample autocorrelation (ACF) and partial autocorrelation (PACF).
+
+    These are the identifying diagnostics of the Box-Jenkins approach to
+    ARIMA modelling: the lag where the ACF tails off while the PACF cuts off
+    signals an autoregressive order, and vice-versa for the moving-average
+    order, so a single call surfaces the information needed to choose ``p``
+    and ``q`` before fitting :func:`ts_forecast.models.forecast_arima`.
+
+    ``values`` is treated as one series; for non-stationary input apply a
+    difference first (see
+    :func:`ts_forecast.diagnostics.stationarity_report`). The confidence
+    bands use the Bartlett approximation — the normal quantile for ``alpha``
+    scaled by ``1 / sqrt(n)`` — so a lag whose value leaves its band is
+    significant at the two-sided level.
+    """
+
+    from statsmodels.tsa.stattools import acf as _acf, pacf as _pacf
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if observed.size < 2:
+        raise ValueError("at least two observations are required")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if np.all(observed == observed[0]):
+        raise ValueError("values must not be constant")
+    if isinstance(n_lags, bool) or not isinstance(n_lags, int) or n_lags < 1:
+        raise ValueError("n_lags must be a positive integer")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    if n_lags >= observed.size:
+        raise ValueError("n_lags must be smaller than the number of observations")
+
+    acf_vals, acf_conf_int = _acf(observed, nlags=n_lags, alpha=alpha)
+    pacf_vals, pacf_conf_int = _pacf(observed, nlags=n_lags, alpha=alpha, method="ywm")
+    return {
+        "acf": np.asarray(acf_vals, dtype=float),
+        "acf_conf_int": np.asarray(acf_conf_int, dtype=float),
+        "pacf": np.asarray(pacf_vals, dtype=float),
+        "pacf_conf_int": np.asarray(pacf_conf_int, dtype=float),
+        "n": int(observed.size),
+        "alpha": float(alpha),
+    }
+
+
+def plot_acf_pacf(values, n_lags=40, alpha=0.05, figsize=(10, 6)):
+    """Plot the ACF and PACF with significance bands.
+
+    Renders the sample autocorrelation above the partial autocorrelation,
+    each with the same ``alpha``-level Bartlett bands used by
+    :func:`acf_pacf`, so significant lags stand out visually. Lag 0 is drawn
+    in both panels (it is the trivial unit autocorrelation) but is never
+    significant. Returns ``(fig, axes)`` ready for further styling or saving.
+    """
+
+    import matplotlib.pyplot as plt
+
+    result = acf_pacf(values, n_lags=n_lags, alpha=alpha)
+    lags = np.arange(n_lags + 1)
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
+
+    panels = (
+        ("acf", "acf_conf_int", "Autocorrelation"),
+        ("pacf", "pacf_conf_int", "Partial Autocorrelation"),
+    )
+    for ax, (value_key, conf_key, label) in zip(axes, panels):
+        series = result[value_key]
+        conf_int = result[conf_key]
+        lower, upper = conf_int[:, 0], conf_int[:, 1]
+        ax.bar(lags, series, width=0.6, color="#4C72B0", edgecolor="white")
+        ax.axhline(0.0, color="black", linewidth=0.8)
+        ax.fill_between(lags, lower, upper, color="#9ECAE1", alpha=0.4)
+        ax.plot(lags, upper, color="#3182BD", linewidth=0.8)
+        ax.plot(lags, lower, color="#3182BD", linewidth=0.8)
+        ax.set_ylabel(label)
+        margin = 0.05
+        ax.set_ylim(
+            float(min(lower.min(), series.min())) - margin,
+            float(max(upper.max(), series.max())) + margin,
+        )
+    axes[-1].set_xlabel("Lag")
+    fig.tight_layout()
+    return fig, axes
+
