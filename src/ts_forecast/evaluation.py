@@ -1464,3 +1464,56 @@ def overall_weighted_average(y_true, y_pred, y_train, seasonal_period=1):
         + 0.5 * (model_smape / benchmark_smape)
     )
 
+
+def forecast_accuracy(y_true, y_pred, y_train=None, seasonal_period=1):
+    """Score one forecast with the standard battery of accuracy metrics.
+
+    Bundles the per-forecast error measures used across this module — mean
+    error, MAE, RMSE, MAPE, symmetric MAPE, and forecast bias — and, when an
+    in-sample training series is supplied, the scale-free MASE and RMSSE that
+    make the error comparable across series with different magnitudes. The
+    shape mirrors R's ``accuracy()``: a single call is enough to score and
+    rank a forecast without chaining metric calls.
+
+    ``seasonal_period`` drives the seasonal-naive scale used by MASE and
+    RMSSE; it defaults to ``1`` (the plain naive baseline). When ``y_train``
+    is omitted the two scale-free metrics are reported as ``None``.
+    """
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(np.concatenate([observed, predicted]))):
+        raise ValueError("y_true and y_pred must contain only finite values")
+    if isinstance(seasonal_period, bool) or not isinstance(seasonal_period, int):
+        raise TypeError("seasonal_period must be an integer")
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be at least 1")
+
+    metrics = compute_metrics(observed, predicted)
+    residuals = observed - predicted
+    metrics["me"] = float(np.mean(residuals))
+    metrics["smape"] = float(symmetric_mean_absolute_percentage_error(observed, predicted))
+    metrics["bias"] = float(forecast_bias(observed, predicted))
+    metrics["count"] = int(observed.size)
+    metrics["mase"] = None
+    metrics["rmse_scaled"] = None
+
+    if y_train is not None:
+        training = np.asarray(y_train, dtype=float).ravel()
+        if training.size <= seasonal_period:
+            raise ValueError("y_train must contain more than one seasonal period")
+        if not np.all(np.isfinite(training)):
+            raise ValueError("y_train must contain only finite values")
+        metrics["mase"] = mean_absolute_scaled_error(
+            observed, predicted, training, seasonal_period
+        )
+        metrics["rmse_scaled"] = root_mean_squared_scaled_error(
+            observed, predicted, training, seasonal_period
+        )
+
+    return metrics
+
