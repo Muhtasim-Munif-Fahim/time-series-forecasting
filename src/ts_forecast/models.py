@@ -766,3 +766,107 @@ def aggregate_forecast_horizons(
         agg_periods.append(period)
 
     return np.array(agg_values), np.array(agg_ts), np.array(agg_periods)
+
+
+def holt_winters_forecast(
+    train, target_col, steps=1, seasonal_period=None,
+    trend="add", seasonal=None, damped_trend=False,
+):
+    """Forecast with Holt-Winters exponential smoothing.
+
+    Exponential smoothing methods model level, trend, and seasonal components
+    separately and update each with exponentially decaying weights. The
+    Holt-Winters extension adds a seasonal component, making it a natural
+    complement to ARIMA: where ARIMA models the autocorrelation in residuals,
+    Holt-Winters directly models the seasonal pattern.
+
+    ``trend`` controls the trend component ("add" for additive, "mul" for
+    multiplicative, or ``None`` for no trend) and ``seasonal`` controls the
+    seasonal component ("add" or "mul", or ``None`` to disable). When both
+    are ``None`` the model reduces to Simple Exponential Smoothing. Multiplicative
+    trends and seasons require strictly positive values.
+
+    Parameters
+    ----------
+    train : pd.DataFrame
+        Training data with a target column.
+    target_col : str
+        Name of the column to forecast.
+    steps : int, default 1
+        Forecast horizon.
+    seasonal_period : int, optional
+        Number of periods in a season. Required when ``seasonal`` is set.
+    trend : {"add", "mul", None}, default "add"
+        Type of trend component.
+    seasonal : {"add", "mul", None}, default None
+        Type of seasonal component.
+    damped_trend : bool, default False
+        Dampen the trend to a flat asymptote for long-horizon forecasts.
+        Requires a non-None ``trend``.
+
+    Returns
+    -------
+    np.ndarray
+        Forecast values of length ``steps``.
+    """
+
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+
+    if trend not in {"add", "mul", None}:
+        raise ValueError("trend must be 'add', 'mul', or None")
+    if seasonal is not None and seasonal not in {"add", "mul"}:
+        raise ValueError("seasonal must be 'add', 'mul', or None")
+    if damped_trend and trend is None:
+        raise ValueError("damped_trend requires a trend component")
+    if seasonal is not None:
+        if seasonal_period is None:
+            raise ValueError("seasonal_period is required when seasonal is set")
+        if (
+            isinstance(seasonal_period, bool)
+            or not isinstance(seasonal_period, int)
+            or seasonal_period < 2
+        ):
+            raise ValueError("seasonal_period must be an integer of at least 2")
+    elif seasonal_period is not None and seasonal_period < 2:
+        raise ValueError("seasonal_period must be at least 2 when provided")
+
+    if trend in {"add", "mul"} and values.size < 2:
+        raise ValueError(
+            "at least two observations are required with a trend component"
+        )
+    if seasonal is not None and values.size < 2 * seasonal_period:
+        raise ValueError(
+            "training data must contain at least two complete seasonal periods"
+        )
+
+    if trend == "mul" and np.any(values <= 0):
+        raise ValueError("multiplicative trend requires strictly positive values")
+    if seasonal == "mul" and np.any(values <= 0):
+        raise ValueError(
+            "multiplicative seasonal requires strictly positive values"
+        )
+
+    periods = seasonal_period if seasonal is not None else 0
+
+    model = ExponentialSmoothing(
+        values,
+        trend=trend,
+        seasonal=seasonal,
+        seasonal_periods=periods,
+        damped_trend=damped_trend,
+        initialization_method="estimated",
+    )
+    fitted = model.fit()
+    forecast = fitted.forecast(steps)
+    return np.asarray(forecast, dtype=float)
