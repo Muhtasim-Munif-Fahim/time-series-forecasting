@@ -1403,3 +1403,64 @@ def bias_variance_decomposition(y_true, predictions):
     }
 
 
+def overall_weighted_average(y_true, y_pred, y_train, seasonal_period=1):
+    """Score a forecast against the M4 competition's Overall Weighted Average.
+
+    ``OWA`` normalizes a forecast's MASE and sSMAPE against the same metrics
+    of a seasonal-naive benchmark, then averages the two ratios with equal
+    weight. A value of ``1.0`` means the forecast matches the seasonal-naive
+    baseline; below ``1.0`` is better, above ``1.0`` is worse. Unlike
+    :func:`forecast_skill_score`, which returns a signed percentage improvement
+    on a single error type, OWA fuses the scale-free shape (sSMAPE) and the
+    scale-free error (MASE) into one dimensionless score, making it the
+    headline accuracy metric of the M4 forecasting competition.
+
+    The benchmark is the seasonal-naive forecast constructed from ``y_train``:
+    each prediction repeats the value from ``seasonal_period`` steps earlier,
+    so ``seasonal_period=1`` yields the plain naive benchmark.
+    """
+
+    if not isinstance(seasonal_period, bool) and not isinstance(seasonal_period, int):
+        raise TypeError("seasonal_period must be an integer")
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be at least 1")
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    training = np.asarray(y_train, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size == 0:
+        raise ValueError("at least one observation is required")
+    if training.size <= seasonal_period:
+        raise ValueError("y_train must contain more than one seasonal period")
+    if not np.all(np.isfinite(np.concatenate([observed, predicted, training]))):
+        raise ValueError("inputs must contain only finite values")
+
+    model_mase = mean_absolute_scaled_error(
+        observed, predicted, training, seasonal_period
+    )
+    model_smape = symmetric_mean_absolute_percentage_error(observed, predicted)
+
+    period = int(seasonal_period)
+    if period == 1:
+        benchmark = np.full(observed.size, float(training[-1]))
+    else:
+        season = training[-period:]
+        benchmark = np.resize(season, observed.size)
+
+    benchmark_mase = mean_absolute_scaled_error(
+        observed, benchmark, training, seasonal_period
+    )
+    benchmark_smape = symmetric_mean_absolute_percentage_error(
+        observed, benchmark
+    )
+
+    if benchmark_mase <= 0 or benchmark_smape <= 0:
+        raise ValueError("benchmark errors must be finite and non-zero")
+
+    return float(
+        0.5 * (model_mase / benchmark_mase)
+        + 0.5 * (model_smape / benchmark_smape)
+    )
+
