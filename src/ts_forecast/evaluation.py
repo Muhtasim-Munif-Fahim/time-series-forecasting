@@ -88,6 +88,36 @@ def forecast_bias(y_true, y_pred):
     return np.mean(y_pred - y_true)
 
 
+def theils_u(y_true, y_pred):
+    """Return Theil's U inequality coefficient relative to a naive random walk.
+
+    Theil's U compares the model's RMSE to the RMSE of a naive random-walk
+    benchmark (predict the last observed value). A value below 1.0 means the
+    model outperforms the naive benchmark; 1.0 means parity; above 1.0 means
+    the model is worse than naive.
+
+    Both the model errors and the naive errors are evaluated over the same
+    horizon (observations 1 through n-1) so the comparison is fair even when
+    the first model prediction would otherwise skew the denominator.
+    """
+    observed = np.asarray(y_true, dtype=float).ravel()
+    predicted = np.asarray(y_pred, dtype=float).ravel()
+    if observed.shape != predicted.shape:
+        raise ValueError("y_true and y_pred must have equal length")
+    if observed.size < 2:
+        raise ValueError("at least two observations are required")
+    if not np.all(np.isfinite(np.concatenate([observed, predicted]))):
+        raise ValueError("y_true and y_pred must contain only finite values")
+
+    model_errors = predicted[1:] - observed[1:]
+    model_rmse = float(np.sqrt(np.mean(model_errors ** 2)))
+    naive_errors = np.diff(observed)
+    naive_rmse = float(np.sqrt(np.mean(naive_errors ** 2)))
+    if naive_rmse == 0.0:
+        return 0.0 if model_rmse == 0.0 else float("inf")
+    return model_rmse / naive_rmse
+
+
 def symmetric_mean_absolute_percentage_error(y_true, y_pred):
     """Return sMAPE as a percentage while handling jointly-zero observations."""
 
