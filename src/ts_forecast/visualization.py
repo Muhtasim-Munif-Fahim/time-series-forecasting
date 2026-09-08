@@ -2,6 +2,7 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 
 def plot_forecast(train, test, forecast, target_col, title="Forecast Results", figsize=(12, 6)):
@@ -32,3 +33,52 @@ def plot_residuals(y_true, y_pred, figsize=(12, 4)):
     ax2.set_ylabel("Residual")
     ax2.set_title("Residuals vs Predicted")
     return fig, (ax1, ax2)
+
+
+def plot_decomposition(
+    values,
+    seasonal_period,
+    model="additive",
+    title=None,
+    figsize=(12, 8),
+):
+    """Plot trend, seasonal, and residual components from :func:`seasonal_decompose`.
+
+    The four-panel figure shows the original observed series alongside the
+    extracted trend (centered moving average), seasonal pattern, and residual
+    noise. NaN edges from the centered moving average are masked so the trend
+    panel focuses on the well-defined interior.
+    """
+
+    from ts_forecast.evaluation import seasonal_decompose
+
+    observed = np.asarray(values, dtype=float).ravel()
+    components = seasonal_decompose(observed, seasonal_period, model=model)
+    trend = components["trend"]
+    seasonal = components["seasonal"]
+    residual = components["residual"]
+
+    x = np.arange(observed.size)
+
+    fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=True)
+    axes[0].plot(x, observed, color="steelblue")
+    axes[0].set_ylabel("Observed")
+    axes[0].set_title(title or f"Seasonal Decomposition ({model})")
+
+    finite_trend = np.isfinite(trend)
+    axes[1].plot(x[finite_trend], trend[finite_trend], color="darkorange")
+    axes[1].set_ylabel("Trend")
+    axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(x, seasonal, color="green")
+    axes[2].set_ylabel("Seasonal")
+    axes[2].grid(True, alpha=0.3)
+
+    axes[3].plot(x, residual, color="gray")
+    axes[3].axhline(0, color="red", linestyle="--", linewidth=1)
+    axes[3].set_ylabel("Residual")
+    axes[3].set_xlabel("Time")
+    axes[3].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return fig, axes
