@@ -870,3 +870,134 @@ def holt_winters_forecast(
     fitted = model.fit()
     forecast = fitted.forecast(steps)
     return np.asarray(forecast, dtype=float)
+
+
+def _hierarchy_matrix(structure, arrays):
+    """Build the summing matrix S and the leaf ordering it is indexed by.
+
+    Row ``i`` of S expresses node ``i`` as a sum of leaves, so ``S @ leaves``
+    reproduces every node in the hierarchy. Returns ``(S, nodes, leaves)``.
+    """
+
+    nodes = list(arrays) + [node for node in structure if node not in arrays]
+    leaves = [node for node in nodes if not structure.get(node)]
+    if not leaves:
+        raise ValueError("hierarchy must contain at least one leaf node")
+    leaf_index = {leaf: position for position, leaf in enumerate(leaves)}
+
+    def expand(node, visiting):
+        if node in visiting:
+            raise ValueError("hierarchy must not contain cycles")
+        children = list(structure.get(node, ()))
+        if not children:
+            row = np.zeros(len(leaves))
+            row[leaf_index[node]] = 1.0
+            return row
+        return np.sum(
+            [expand(child, visiting | {node}) for child in children], axis=0
+        )
+
+    summing = np.vstack([expand(node, frozenset()) for node in nodes])
+    return summing, nodes, leaves
+
+
+def reconcile_optimal(forecasts, structure, method="ols", residuals=None):
+    """Reconcile a hierarchy by least-squares projection (MinT family).
+
+    Bottom-up trusts only the leaves and top-down only the roots. Both
+    discard information: a forecast made directly at an aggregate level often
+    beats the sum of noisy leaves, and vice versa. Optimal reconciliation
+    instead finds the leaf vector whose implied hierarchy sits closest to
+    every base forecast at once, then rebuilds all levels from it, so no
+    level's forecast is thrown away.
+
+    Concretely it solves the generalized least-squares problem
+    ``min (y - S b)' W^-1 (y - S b)`` for leaf vector ``b``, where ``y``
+    stacks the base forecasts and ``S`` is the summing matrix, then returns
+    ``S b``. The result is coherent by construction.
+
+    ``method`` selects the weighting ``W``:
+
+    ``ols``
+        Identity. Every node weighted equally (Hyndman et al. OLS
+        reconciliation). Needs nothing beyond the forecasts.
+    ``wls``
+        Structural scaling: each node weighted by how many leaves it
+        aggregates, so a total is not treated as being as precise as a leaf.
+    ``mint_diagonal``
+        Weighted by each node's in-sample residual variance, the diagonal
+        MinT estimator of Wickramasuriya et al. Requires ``residuals``, a
+        mapping of node name to that node's in-sample residual series.
+        This is usually the best of the three when residuals are available.
+
+    ``forecasts`` maps node names to point forecasts and ``structure`` maps
+    aggregates to their direct children, matching
+    :func:`reconcile_bottom_up`. Aggregates named in ``structure`` but absent
+    from ``forecasts`` carry no observation and are simply derived.
+    """
+
+    if not isinstance(forecasts, Mapping):
+        raise ValueError("forecasts must be a mapping of node names")
+    if not forecasts:
+        raise ValueError("forecasts must contain at least one node")
+    if not isinstance(structure, Mapping) or not structure:
+        raise ValueError("structure must map aggregates to their children")
+    if method not in {"ols", "wls", "mint_diagonal"}:
+        raise ValueError("method must be one of 'ols', 'wls', 'mint_diagonal'")
+
+    arrays = {}
+    for name, forecast in forecasts.items():
+        array = np.asarray(forecast, dtype=float).ravel()
+        if array.size == 0:
+            raise ValueError("forecasts must not be empty")
+        if not np.all(np.isfinite(array)):
+            raise ValueError("forecasts must contain only finite numbers")
+        arrays[name] = array
+    if len({array.size for array in arrays.values()}) != 1:
+        raise ValueError("all forecasts must have the same horizon")
+    for children in structure.values():
+        for child in children:
+            if child not in arrays and child not in structure:
+                raise KeyError(f"unknown node in hierarchy: {child}")
+
+    summing, nodes, _leaves = _hierarchy_matrix(structure, arrays)
+
+    # Nodes without a base forecast contribute no equation; dropping their
+    # rows is what lets a partially observed hierarchy reconcile at all.
+    observed = [position for position, node in enumerate(nodes) if node in arrays]
+    if not observed:
+        raise ValueError("at least one node must carry a base forecast")
+    design = summing[observed, :]
+    stacked = np.vstack([arrays[nodes[position]] for position in observed])
+
+    if method == "ols":
+        weights = np.ones(len(observed))
+    elif method == "wls":
+        # Row sums of S count the leaves under each node.
+        weights = summing[observed, :].sum(axis=1)
+    else:
+        if not isinstance(residuals, Mapping):
+            raise ValueError("mint_diagonal requires residuals for each node")
+        weights = np.empty(len(observed))
+        for slot, position in enumerate(observed):
+            node = nodes[position]
+            if node not in residuals:
+                raise KeyError(f"missing residuals for node: {node}")
+            series = np.asarray(residuals[node], dtype=float).ravel()
+            if series.size < 2:
+                raise ValueError(f"node {node} needs at least two residuals")
+            variance = float(np.var(series, ddof=1))
+            # A perfectly fitting node would otherwise get infinite weight.
+            weights[slot] = variance if variance > 0 else 1e-12
+
+    if np.any(weights <= 0):
+        raise ValueError("reconciliation weights must be strictly positive")
+
+    # GLS with diagonal W is OLS on rows scaled by 1/sqrt(w).
+    scale = 1.0 / np.sqrt(weights)
+    scaled_design = design * scale[:, None]
+    scaled_targets = stacked * scale[:, None]
+
+    leaf_solution, *_ = np.linalg.lstsq(scaled_design, scaled_targets, rcond=None)
+    rebuilt = summing @ leaf_solution
+    return {node: rebuilt[position] for position, node in enumerate(nodes)}
