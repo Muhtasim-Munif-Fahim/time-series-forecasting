@@ -1548,6 +1548,44 @@ def forecast_accuracy(y_true, y_pred, y_train=None, seasonal_period=1):
     return metrics
 
 
+def interval_sharpness(lower, upper, y_train=None):
+    """Summarize the width of prediction intervals.
+
+    Coverage alone can reward arbitrarily wide intervals.  This companion
+    diagnostic reports average and median width and, when training values are
+    supplied, scales width by their observed range so interval concentration
+    can be compared across series.
+    """
+    low = np.asarray(lower, dtype=float).ravel()
+    high = np.asarray(upper, dtype=float).ravel()
+    if low.shape != high.shape:
+        raise ValueError("lower and upper must have equal length")
+    if low.size == 0:
+        raise ValueError("at least one interval is required")
+    if not np.all(np.isfinite(np.concatenate([low, high]))):
+        raise ValueError("interval bounds must be finite")
+    if np.any(low > high):
+        raise ValueError("each lower bound must not exceed its upper bound")
+    widths = high - low
+    result = {
+        "count": int(widths.size),
+        "mean_width": float(np.mean(widths)),
+        "median_width": float(np.median(widths)),
+        "min_width": float(np.min(widths)),
+        "max_width": float(np.max(widths)),
+        "normalized_mean_width": None,
+    }
+    if y_train is not None:
+        training = np.asarray(y_train, dtype=float).ravel()
+        if training.size < 2 or not np.all(np.isfinite(training)):
+            raise ValueError("y_train must contain at least two finite values")
+        scale = float(np.max(training) - np.min(training))
+        if scale <= 0:
+            raise ValueError("y_train must have non-zero range")
+        result["normalized_mean_width"] = result["mean_width"] / scale
+    return result
+
+
 def acf_pacf(values, n_lags=40, alpha=0.05):
     """Compute the sample autocorrelation (ACF) and partial autocorrelation (PACF).
 
