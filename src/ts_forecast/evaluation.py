@@ -1586,6 +1586,30 @@ def interval_sharpness(lower, upper, y_train=None):
     return result
 
 
+def interval_score(y_true, lower, upper, coverage=0.9):
+    """Compute the proper interval score for a central prediction interval.
+
+    The score rewards narrow intervals but applies a coverage-scaled penalty
+    whenever an observation falls outside its interval. Lower values are
+    better, making it suitable for selecting competing interval forecasts.
+    """
+    observed = np.asarray(y_true, dtype=float).ravel()
+    low = np.asarray(lower, dtype=float).ravel()
+    high = np.asarray(upper, dtype=float).ravel()
+    if not (observed.shape == low.shape == high.shape) or observed.size == 0:
+        raise ValueError("y_true, lower, and upper must be non-empty and equally sized")
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    if not np.all(np.isfinite(np.concatenate([observed, low, high]))):
+        raise ValueError("inputs must contain only finite values")
+    if np.any(low > high):
+        raise ValueError("each lower bound must not exceed its upper bound")
+    alpha = 1.0 - float(coverage)
+    scores = (high - low) + (2.0 / alpha) * np.maximum(low - observed, 0.0)
+    scores += (2.0 / alpha) * np.maximum(observed - high, 0.0)
+    return {"score": float(np.mean(scores)), "scores": scores, "coverage": float(coverage)}
+
+
 def acf_pacf(values, n_lags=40, alpha=0.05):
     """Compute the sample autocorrelation (ACF) and partial autocorrelation (PACF).
 
