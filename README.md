@@ -32,7 +32,9 @@ print(report["preferred"], report["metrics"]["ensemble"]["mae"])
 ```
 
 `weights="inverse_mae"` tilts the blend toward the component with the
-smaller in-sample one-step error.
+smaller in-sample one-step error. When the training series is constant
+or perfectly seasonal, MASE and RMSSE are omitted (the seasonal-naive
+scale is zero) and the remaining kit metrics are still reported.
 
 ## CLI
 
