@@ -1653,16 +1653,25 @@ def seasonal_naive_drift_diagnostic(
         resolved = resolved / resolved.sum()
 
     training = np.asarray(train[target_col].dropna(), dtype=float)
-    metrics = {
-        name: forecast_accuracy(
-            observed, prediction, y_train=training, seasonal_period=seasonal_period
-        )
-        for name, prediction in (
-            ("seasonal_naive", seasonal),
-            ("drift", drift),
-            ("ensemble", ensemble),
-        )
-    }
+    metrics = {}
+    for name, prediction in (
+        ("seasonal_naive", seasonal),
+        ("drift", drift),
+        ("ensemble", ensemble),
+    ):
+        try:
+            metrics[name] = forecast_accuracy(
+                observed,
+                prediction,
+                y_train=training,
+                seasonal_period=seasonal_period,
+            )
+        except ValueError as exc:
+            # Perfectly seasonal or constant training series have a zero
+            # seasonal-naive scale, so MASE/RMSSE are undefined.
+            if "non-zero" not in str(exc):
+                raise
+            metrics[name] = forecast_accuracy(observed, prediction)
 
     maes = {name: metrics[name]["mae"] for name in metrics}
     best = min(maes.values())

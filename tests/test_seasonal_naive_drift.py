@@ -146,6 +146,16 @@ def test_diagnostic_skill_matches_direct_call():
     )
 
 
+def test_diagnostic_handles_zero_mase_scale():
+    train = _frame([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    holdout = np.array([1.0, 1.0])
+    report = seasonal_naive_drift_diagnostic(
+        train, "value", holdout, seasonal_period=2
+    )
+    assert report["metrics"]["ensemble"]["mae"] == pytest.approx(0.0)
+    assert report["metrics"]["ensemble"]["mase"] is None
+
+
 def test_diagnostic_tie_prefers_ensemble():
     train = _frame([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
     holdout = np.array([1.0, 1.0])
