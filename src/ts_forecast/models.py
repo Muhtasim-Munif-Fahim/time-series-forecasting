@@ -371,6 +371,95 @@ def naive2_forecast(train, target_col, steps=1, seasonal_period=None):
     return forecast
 
 
+def drift_forecast(train, target_col, steps=1):
+    """Forecast with the classical random walk with drift.
+
+    The slope is the average training increment
+    ``(last - first) / (n - 1)`` and every horizon step continues that
+    increment from the last observation: ``last + slope * h``. This is
+    the same point forecast used by the drift method of
+    :func:`baseline_prediction_interval` and is the trend half of
+    :func:`seasonal_naive_drift_forecast`.
+    """
+
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size < 2:
+        raise ValueError("drift forecast requires at least two observations")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+
+    slope = (values[-1] - values[0]) / (values.size - 1)
+    horizon = np.arange(1, steps + 1, dtype=float)
+    return values[-1] + slope * horizon
+
+
+def _inverse_mae_ensemble_weights(values, seasonal_period):
+    """Weight seasonal-naive and drift by inverse in-sample one-step MAE."""
+
+    period = int(seasonal_period)
+    seasonal_mae = float(np.mean(np.abs(values[period:] - values[:-period])))
+    slope = (values[-1] - values[0]) / (values.size - 1)
+    drift_mae = float(np.mean(np.abs(values[1:] - (values[:-1] + slope))))
+    weights = np.array(
+        [
+            1.0 / seasonal_mae if seasonal_mae > 0 else 1.0,
+            1.0 / drift_mae if drift_mae > 0 else 1.0,
+        ],
+        dtype=float,
+    )
+    return weights
+
+
+def seasonal_naive_drift_forecast(
+    train, target_col, steps=1, seasonal_period=7, weights=None
+):
+    """Blend a seasonal-naive forecast with a random-walk-with-drift.
+
+    Seasonal-naive repeats the last completed season; drift extrapolates
+    the average training increment. Their combination is a cheap
+    ETS-like baseline that captures both a repeating seasonal pattern
+    and a linear trend without fitting smoothing parameters. Holt-Winters
+    is already available via :func:`holt_winters_forecast`; this ensemble
+    is the corresponding two-component diagnostic forecast.
+
+    ``weights`` may be ``None`` (equal mean), a two-element sequence
+    ``(seasonal_naive, drift)`` forwarded to :func:`ensemble_forecast`,
+    or ``"inverse_mae"`` to weight each component by the inverse of its
+    in-sample one-step MAE.
+    """
+
+    if (
+        isinstance(seasonal_period, bool)
+        or not isinstance(seasonal_period, int)
+        or seasonal_period < 2
+    ):
+        raise ValueError("seasonal_period must be an integer of at least 2")
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+
+    seasonal = seasonal_naive_forecast(
+        train, target_col, steps=steps, seasonal_period=seasonal_period
+    )
+    drift = drift_forecast(train, target_col, steps=steps)
+
+    resolved = weights
+    if weights == "inverse_mae":
+        values = np.asarray(train[target_col].dropna(), dtype=float)
+        if values.size < 2 * seasonal_period:
+            raise ValueError(
+                "inverse_mae weighting requires at least two complete seasonal periods"
+            )
+        resolved = _inverse_mae_ensemble_weights(values, seasonal_period)
+    elif isinstance(weights, str):
+        raise ValueError("weights must be None, 'inverse_mae', or a two-element sequence")
+
+    return ensemble_forecast([seasonal, drift], weights=resolved, method="mean")
+
+
 def baseline_prediction_interval(
     train, target_col, steps, method="naive", seasonal_period=None, coverage=0.9
 ):

@@ -1548,6 +1548,165 @@ def forecast_accuracy(y_true, y_pred, y_train=None, seasonal_period=1):
     return metrics
 
 
+def seasonal_naive_drift_diagnostic(
+    train,
+    target_col,
+    y_true,
+    steps=None,
+    seasonal_period=7,
+    weights=None,
+):
+    """Compare seasonal-naive, drift, and their ensemble on a holdout.
+
+    Holt-Winters / ETS is already in the kit
+    (:func:`ts_forecast.models.holt_winters_forecast`). This diagnostic
+    instead scores the two classical pieces that method interpolates — a
+    repeating seasonal-naive forecast and a random-walk-with-drift — plus
+    the mean (or weighted) blend from
+    :func:`ts_forecast.models.seasonal_naive_drift_forecast`. Every
+    component is scored with :func:`forecast_accuracy` so MAE, RMSE,
+    MAPE, sMAPE, bias, MASE, and RMSSE stay consistent with the rest of
+    the toolkit.
+
+    ``preferred`` is the component with the lowest MAE. Exact ties prefer
+    the ensemble, then seasonal-naive, then drift. ``skill`` reports the
+    signed percent improvement of the ensemble over each component via
+    :func:`forecast_skill_score`.
+
+    Parameters
+    ----------
+    train : pd.DataFrame
+        Training frame containing ``target_col``.
+    target_col : str
+        Name of the series to forecast.
+    y_true : array-like
+        Holdout observations used to score the three forecasts.
+    steps : int, optional
+        Forecast horizon. Defaults to the length of ``y_true``.
+    seasonal_period : int, default 7
+        Season length forwarded to the seasonal-naive component.
+    weights : sequence of float or {"inverse_mae"}, optional
+        Ensemble weights. ``None`` uses an equal mean;
+        ``"inverse_mae"`` uses inverse in-sample one-step MAE.
+
+    Returns
+    -------
+    dict
+        ``forecasts``, ``weights``, ``metrics``, ``preferred``, and
+        ``skill``.
+    """
+
+    from ts_forecast.models import (
+        _inverse_mae_ensemble_weights,
+        drift_forecast,
+        seasonal_naive_drift_forecast,
+        seasonal_naive_forecast,
+    )
+
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    if (
+        isinstance(seasonal_period, bool)
+        or not isinstance(seasonal_period, int)
+        or seasonal_period < 2
+    ):
+        raise ValueError("seasonal_period must be an integer of at least 2")
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    if observed.size == 0:
+        raise ValueError("at least one holdout observation is required")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("y_true must contain only finite values")
+    if steps is None:
+        steps = int(observed.size)
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if observed.size != steps:
+        raise ValueError("y_true length must match steps")
+
+    seasonal = seasonal_naive_forecast(
+        train, target_col, steps=steps, seasonal_period=seasonal_period
+    )
+    drift = drift_forecast(train, target_col, steps=steps)
+    ensemble = seasonal_naive_drift_forecast(
+        train,
+        target_col,
+        steps=steps,
+        seasonal_period=seasonal_period,
+        weights=weights,
+    )
+
+    if weights == "inverse_mae":
+        values = np.asarray(train[target_col].dropna(), dtype=float)
+        resolved = _inverse_mae_ensemble_weights(values, seasonal_period)
+        resolved = resolved / resolved.sum()
+    elif weights is None:
+        resolved = np.array([0.5, 0.5], dtype=float)
+    else:
+        resolved = np.asarray(weights, dtype=float).ravel()
+        if resolved.size != 2:
+            raise ValueError("weights must contain exactly two values")
+        if not np.all(np.isfinite(resolved)) or np.any(resolved < 0):
+            raise ValueError("weights must be finite and non-negative")
+        if resolved.sum() <= 0:
+            raise ValueError("at least one weight must be positive")
+        resolved = resolved / resolved.sum()
+
+    training = np.asarray(train[target_col].dropna(), dtype=float)
+    metrics = {}
+    for name, prediction in (
+        ("seasonal_naive", seasonal),
+        ("drift", drift),
+        ("ensemble", ensemble),
+    ):
+        try:
+            metrics[name] = forecast_accuracy(
+                observed,
+                prediction,
+                y_train=training,
+                seasonal_period=seasonal_period,
+            )
+        except ValueError as exc:
+            # Perfectly seasonal or constant training series have a zero
+            # seasonal-naive scale, so MASE/RMSSE are undefined.
+            if "non-zero" not in str(exc):
+                raise
+            metrics[name] = forecast_accuracy(observed, prediction)
+
+    maes = {name: metrics[name]["mae"] for name in metrics}
+    best = min(maes.values())
+    candidates = [name for name, mae in maes.items() if mae == best]
+    for name in ("ensemble", "seasonal_naive", "drift"):
+        if name in candidates:
+            preferred = name
+            break
+
+    skill = {}
+    for label, reference in (
+        ("ensemble_vs_seasonal_naive", seasonal),
+        ("ensemble_vs_drift", drift),
+    ):
+        try:
+            skill[label] = forecast_skill_score(observed, ensemble, reference)
+        except ValueError:
+            skill[label] = None
+
+    return {
+        "forecasts": {
+            "seasonal_naive": seasonal,
+            "drift": drift,
+            "ensemble": ensemble,
+        },
+        "weights": {
+            "seasonal_naive": float(resolved[0]),
+            "drift": float(resolved[1]),
+        },
+        "metrics": metrics,
+        "preferred": preferred,
+        "skill": skill,
+    }
+
+
 def interval_sharpness(lower, upper, y_train=None):
     """Summarize the width of prediction intervals.
 
