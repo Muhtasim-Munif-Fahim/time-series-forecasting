@@ -12,6 +12,8 @@ from models import (
     gradient_boosting_forecast, compute_metrics,
     moving_average_forecast, naive_forecast,
 )
+from ts_forecast.evaluation import seasonal_naive_drift_diagnostic
+from ts_forecast.models import seasonal_naive_drift_forecast
 
 
 def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict:
@@ -45,7 +47,39 @@ def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict
     naive_preds = naive_forecast(train["value"], horizon=horizon)
     results["naive"] = compute_metrics(test["value"].values, naive_preds)
 
-    summary = {"n_points": n_points, "n_train": len(train), "n_test": len(test), "results": results}
+    seasonal_period = 30
+    snd_preds = seasonal_naive_drift_forecast(
+        train, "value", steps=horizon, seasonal_period=seasonal_period
+    )
+    results["seasonal_naive_drift"] = compute_metrics(test["value"].values, snd_preds)
+
+    diagnostic = seasonal_naive_drift_diagnostic(
+        train,
+        "value",
+        test["value"].values,
+        steps=horizon,
+        seasonal_period=seasonal_period,
+    )
+    diagnostic_summary = {
+        "preferred": diagnostic["preferred"],
+        "weights": diagnostic["weights"],
+        "skill": diagnostic["skill"],
+        "metrics": {
+            name: {
+                key: metrics[key]
+                for key in ("mae", "rmse", "mape", "smape", "mase")
+            }
+            for name, metrics in diagnostic["metrics"].items()
+        },
+    }
+
+    summary = {
+        "n_points": n_points,
+        "n_train": len(train),
+        "n_test": len(test),
+        "results": results,
+        "seasonal_naive_drift_diagnostic": diagnostic_summary,
+    }
     (output / "results.json").write_text(json.dumps(summary, indent=2))
     df.to_csv(output / "time_series.csv", index=False)
     return summary

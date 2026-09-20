@@ -24,6 +24,16 @@ def main() -> int:
     for model, metrics in results["results"].items():
         print(f"{model:<22} {metrics['rmse']:<10.4f} {metrics['mae']:<10.4f} {metrics['mape']:<10.2f}")
 
+    diagnostic = results.get("seasonal_naive_drift_diagnostic")
+    if diagnostic:
+        print("\nSeasonal-naive + drift ensemble diagnostic")
+        print(f"  preferred: {diagnostic['preferred']}")
+        for name, metrics in diagnostic["metrics"].items():
+            print(
+                f"  {name:<16} MAE={metrics['mae']:.4f}  "
+                f"RMSE={metrics['rmse']:.4f}  MAPE={metrics['mape']:.2f}"
+            )
+
     print(f"\nResults saved to output/results.json")
     return 0
 
