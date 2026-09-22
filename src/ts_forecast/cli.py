@@ -6,6 +6,7 @@ from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnos
 from ts_forecast.models import (
     forecast_arima,
     holt_winters_forecast,
+    sarima_forecast,
     seasonal_naive_drift_forecast,
 )
 from ts_forecast.preprocessing import load_csv, train_test_split
@@ -51,15 +52,17 @@ def build_parser():
     parser.add_argument(
         "--model",
         default="arima",
-        choices=("arima", "holt_winters", "seasonal_naive_drift"),
+        choices=("arima", "holt_winters", "seasonal_naive_drift", "sarima"),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
-        "blends seasonal-naive with random-walk-with-drift.",
+        "blends seasonal-naive with random-walk-with-drift; sarima is the "
+        "fixed SARIMA(1,1,1)(1,0,1)s diagnostic.",
     )
     parser.add_argument(
         "--seasonal-period",
         type=int,
         default=7,
-        help="Season length for Holt-Winters and the seasonal-naive + drift ensemble",
+        help="Season length for Holt-Winters, SARIMA(1,1,1)(1,0,1)s, "
+        "and the seasonal-naive + drift ensemble",
     )
     parser.add_argument(
         "--diagnose",
@@ -108,6 +111,14 @@ def run_cli(args):
             seasonal="add",
         )
         title = "Holt-Winters forecast metrics"
+    elif args.model == "sarima":
+        forecast = sarima_forecast(
+            train,
+            args.target,
+            steps=steps,
+            seasonal_period=args.seasonal_period,
+        )
+        title = "SARIMA(1,1,1)(1,0,1)s forecast metrics"
     else:
         forecast = seasonal_naive_drift_forecast(
             train,

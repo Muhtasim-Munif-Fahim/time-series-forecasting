@@ -649,6 +649,80 @@ def forecast_arima(train, target_col, order=(1, 1, 1), steps=1):
     return np.asarray(forecast, dtype=float)
 
 
+SARIMA_DIAGNOSTIC_ORDER = (1, 1, 1)
+SARIMA_DIAGNOSTIC_SEASONAL_ORDER = (1, 0, 1)
+
+
+def _require_seasonal_period(seasonal_period):
+    if (
+        isinstance(seasonal_period, bool)
+        or not isinstance(seasonal_period, int)
+        or seasonal_period < 2
+    ):
+        raise ValueError("seasonal_period must be an integer of at least 2")
+    return seasonal_period
+
+
+def _sarima_training_values(train, target_col, seasonal_period):
+    period = _require_seasonal_period(seasonal_period)
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+    if values.size < 2 * period:
+        raise ValueError(
+            "training data must contain at least two complete seasonal periods"
+        )
+    return values
+
+
+def fit_sarima(train, target_col, seasonal_period=7):
+    """Fit SARIMA(1, 1, 1)(1, 0, 1, s) with statsmodels.
+
+    Holt-Winters triple exponential smoothing is already available as
+    :func:`holt_winters_forecast`, including additive and multiplicative
+    seasonality. This wrapper is the complementary Box-Jenkins diagnostic:
+    a fixed seasonal ARIMA with one regular AR term, one difference, and
+    one MA term, plus one seasonal AR term, no seasonal difference, and
+    one seasonal MA term. ``seasonal_period`` is the season length ``s``.
+
+    Returns the fitted statsmodels results object. Use
+    :func:`sarima_forecast` when only the point forecast is needed, or
+    :func:`ts_forecast.evaluation.sarima_diagnostic` to score it against
+    the seasonal-naive + drift baseline.
+    """
+
+    import warnings
+
+    period = _require_seasonal_period(seasonal_period)
+    values = _sarima_training_values(train, target_col, period)
+    model = SARIMAX(
+        values,
+        order=SARIMA_DIAGNOSTIC_ORDER,
+        seasonal_order=(*SARIMA_DIAGNOSTIC_SEASONAL_ORDER, period),
+        enforce_stationarity=False,
+        enforce_invertibility=False,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return model.fit(disp=False)
+
+
+def sarima_forecast(train, target_col, steps=1, seasonal_period=7):
+    """Forecast with SARIMA(1, 1, 1)(1, 0, 1, s).
+
+    See :func:`fit_sarima`. Returns a numpy array of length ``steps``.
+    """
+
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_sarima(train, target_col, seasonal_period=seasonal_period)
+    return np.asarray(fitted.forecast(steps=steps), dtype=float)
+
+
 def evaluate_forecast(y_true, y_pred):
     return {
         "mae": mean_absolute_error(y_true, y_pred),
@@ -867,7 +941,10 @@ def holt_winters_forecast(
     separately and update each with exponentially decaying weights. The
     Holt-Winters extension adds a seasonal component, making it a natural
     complement to ARIMA: where ARIMA models the autocorrelation in residuals,
-    Holt-Winters directly models the seasonal pattern.
+    Holt-Winters directly models the seasonal pattern. A fixed
+    SARIMA(1, 1, 1)(1, 0, 1, s) counterpart is available as
+    :func:`sarima_forecast` when a Box-Jenkins diagnostic is the better
+    complement to the seasonal-naive + drift baseline.
 
     ``trend`` controls the trend component ("add" for additive, "mul" for
     multiplicative, or ``None`` for no trend) and ``seasonal`` controls the
