@@ -1707,6 +1707,142 @@ def seasonal_naive_drift_diagnostic(
     }
 
 
+def sarima_diagnostic(
+    train,
+    target_col,
+    y_true,
+    steps=None,
+    seasonal_period=7,
+):
+    """Score SARIMA(1, 1, 1)(1, 0, 1, s) against seasonal-naive + drift.
+
+    Holt-Winters / ETS is already in the kit
+    (:func:`ts_forecast.models.holt_winters_forecast`). This diagnostic
+    is the complementary fixed-order seasonal ARIMA check: it fits
+    SARIMA(1, 1, 1)(1, 0, 1, s) with statsmodels and scores that forecast
+    beside the seasonal-naive, drift, and equal-weight ensemble from
+    :func:`seasonal_naive_drift_diagnostic`. Every component is scored
+    with :func:`forecast_accuracy`.
+
+    ``preferred`` is the component with the lowest MAE. Exact ties prefer
+    SARIMA, then the ensemble, then seasonal-naive, then drift. ``skill``
+    is the signed percent improvement of the SARIMA forecast over each
+    baseline via :func:`forecast_skill_score`.
+
+    Parameters
+    ----------
+    train : pd.DataFrame
+        Training frame containing ``target_col``.
+    target_col : str
+        Name of the series to forecast.
+    y_true : array-like
+        Holdout observations used to score the forecasts.
+    steps : int, optional
+        Forecast horizon. Defaults to the length of ``y_true``.
+    seasonal_period : int, default 7
+        Season length ``s`` in the seasonal ARIMA order and in the
+        seasonal-naive baseline.
+
+    Returns
+    -------
+    dict
+        ``order``, ``seasonal_order``, ``converged``, ``aic``,
+        ``forecasts``, ``metrics``, ``preferred``, and ``skill``.
+    """
+
+    from ts_forecast.models import (
+        SARIMA_DIAGNOSTIC_ORDER,
+        SARIMA_DIAGNOSTIC_SEASONAL_ORDER,
+        drift_forecast,
+        fit_sarima,
+        seasonal_naive_drift_forecast,
+        seasonal_naive_forecast,
+    )
+
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    if (
+        isinstance(seasonal_period, bool)
+        or not isinstance(seasonal_period, int)
+        or seasonal_period < 2
+    ):
+        raise ValueError("seasonal_period must be an integer of at least 2")
+
+    observed = np.asarray(y_true, dtype=float).ravel()
+    if observed.size == 0:
+        raise ValueError("at least one holdout observation is required")
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("y_true must contain only finite values")
+    if steps is None:
+        steps = int(observed.size)
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    if observed.size != steps:
+        raise ValueError("y_true length must match steps")
+
+    fitted = fit_sarima(train, target_col, seasonal_period=seasonal_period)
+    sarima = np.asarray(fitted.forecast(steps=steps), dtype=float)
+    seasonal = seasonal_naive_forecast(
+        train, target_col, steps=steps, seasonal_period=seasonal_period
+    )
+    drift = drift_forecast(train, target_col, steps=steps)
+    ensemble = seasonal_naive_drift_forecast(
+        train, target_col, steps=steps, seasonal_period=seasonal_period
+    )
+
+    training = np.asarray(train[target_col].dropna(), dtype=float)
+    forecasts = {
+        "sarima": sarima,
+        "seasonal_naive": seasonal,
+        "drift": drift,
+        "ensemble": ensemble,
+    }
+    metrics = {}
+    for name, prediction in forecasts.items():
+        try:
+            metrics[name] = forecast_accuracy(
+                observed,
+                prediction,
+                y_train=training,
+                seasonal_period=seasonal_period,
+            )
+        except ValueError as exc:
+            if "non-zero" not in str(exc):
+                raise
+            metrics[name] = forecast_accuracy(observed, prediction)
+
+    maes = {name: metrics[name]["mae"] for name in metrics}
+    best = min(maes.values())
+    candidates = [name for name, mae in maes.items() if mae == best]
+    preferred = "sarima"
+    for name in ("sarima", "ensemble", "seasonal_naive", "drift"):
+        if name in candidates:
+            preferred = name
+            break
+
+    skill = {}
+    for label, reference in (
+        ("sarima_vs_seasonal_naive", seasonal),
+        ("sarima_vs_drift", drift),
+        ("sarima_vs_ensemble", ensemble),
+    ):
+        try:
+            skill[label] = forecast_skill_score(observed, sarima, reference)
+        except ValueError:
+            skill[label] = None
+
+    return {
+        "order": SARIMA_DIAGNOSTIC_ORDER,
+        "seasonal_order": (*SARIMA_DIAGNOSTIC_SEASONAL_ORDER, seasonal_period),
+        "converged": bool(getattr(fitted, "mle_retvals", {}).get("converged", False)),
+        "aic": float(fitted.aic),
+        "forecasts": forecasts,
+        "metrics": metrics,
+        "preferred": preferred,
+        "skill": skill,
+    }
+
+
 def interval_sharpness(lower, upper, y_train=None):
     """Summarize the width of prediction intervals.
 

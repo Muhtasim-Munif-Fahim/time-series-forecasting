@@ -34,6 +34,17 @@ def main() -> int:
                 f"RMSE={metrics['rmse']:.4f}  MAPE={metrics['mape']:.2f}"
             )
 
+    sarima = results.get("sarima_diagnostic")
+    if sarima:
+        print("\nSARIMA(1,1,1)(1,0,1)s diagnostic")
+        print(f"  preferred: {sarima['preferred']}")
+        print(f"  converged: {sarima['converged']}  AIC={sarima['aic']:.2f}")
+        for name, metrics in sarima["metrics"].items():
+            print(
+                f"  {name:<16} MAE={metrics['mae']:.4f}  "
+                f"RMSE={metrics['rmse']:.4f}  MAPE={metrics['mape']:.2f}"
+            )
+
     print(f"\nResults saved to output/results.json")
     return 0
 

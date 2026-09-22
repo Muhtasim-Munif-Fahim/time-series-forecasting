@@ -12,7 +12,7 @@ from models import (
     gradient_boosting_forecast, compute_metrics,
     moving_average_forecast, naive_forecast,
 )
-from ts_forecast.evaluation import seasonal_naive_drift_diagnostic
+from ts_forecast.evaluation import sarima_diagnostic, seasonal_naive_drift_diagnostic
 from ts_forecast.models import seasonal_naive_drift_forecast
 
 
@@ -73,12 +73,42 @@ def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict
         },
     }
 
+    sarima_summary = None
+    finite_train = train["value"].dropna()
+    if len(finite_train) >= 2 * seasonal_period:
+        sarima_report = sarima_diagnostic(
+            train,
+            "value",
+            test["value"].values,
+            steps=horizon,
+            seasonal_period=seasonal_period,
+        )
+        results["sarima"] = compute_metrics(
+            test["value"].values, sarima_report["forecasts"]["sarima"]
+        )
+        sarima_summary = {
+            "order": list(sarima_report["order"]),
+            "seasonal_order": list(sarima_report["seasonal_order"]),
+            "converged": sarima_report["converged"],
+            "aic": sarima_report["aic"],
+            "preferred": sarima_report["preferred"],
+            "skill": sarima_report["skill"],
+            "metrics": {
+                name: {
+                    key: metrics[key]
+                    for key in ("mae", "rmse", "mape", "smape", "mase")
+                }
+                for name, metrics in sarima_report["metrics"].items()
+            },
+        }
+
     summary = {
         "n_points": n_points,
         "n_train": len(train),
         "n_test": len(test),
         "results": results,
         "seasonal_naive_drift_diagnostic": diagnostic_summary,
+        "sarima_diagnostic": sarima_summary,
     }
     (output / "results.json").write_text(json.dumps(summary, indent=2))
     df.to_csv(output / "time_series.csv", index=False)
