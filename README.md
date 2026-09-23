@@ -9,7 +9,10 @@ trend). The seasonal-naive + drift ensemble is the cheap two-component
 read on whether a series is driven by **seasonality**, **trend**, or both.
 The complementary Box-Jenkins check is a fixed
 `SARIMA(1,1,1)(1,0,1)s` diagnostic (`fit_sarima` / `sarima_forecast`),
-fit with statsmodels, which is already a dependency.
+fit with statsmodels, which is already a dependency. Sparse demand, where
+many periods are zero, is handled by Croston's method
+(`fit_croston` / `croston_forecast`), which smooths order size and the
+gap between orders separately.
 
 ## Seasonal-naive + drift ensemble
 
@@ -65,6 +68,36 @@ component; exact ties prefer SARIMA, then the ensemble, then
 seasonal-naive, then drift. `skill` is the percent improvement of the
 SARIMA forecast over each baseline.
 
+## Croston intermittent demand
+
+Seasonal-naive, drift, and SARIMA expect a demand observation in every
+period. Croston's method is the counterpart for intermittent demand:
+most periods are zero, and the non-zero orders arrive at irregular gaps.
+`fit_croston` applies simple exponential smoothing to two series on
+their own — the size of each positive demand, and the number of periods
+between those demands, counting the gap from the start of the series to
+the first order. `croston_forecast` repeats the per-period rate
+`demand_size / interval` across the horizon.
+
+```python
+from ts_forecast.models import croston_forecast, fit_croston
+
+fitted = fit_croston(train, "value", alpha_size=0.2, alpha_interval=0.1)
+forecast = croston_forecast(train, "value", steps=8, alpha=0.1)
+print(fitted["demand_size"], fitted["interval"], forecast[0])
+```
+
+`alpha` is the shared smoothing constant (default `0.1`). `alpha_size`
+and `alpha_interval` override it for one component. Pass `alpha=None`
+and leave an override unset to choose that component's constant by
+one-step squared error. The level starts at the first demand. Zeros
+only lengthen the next interval, and zeros after the last order do not
+revise it. `method="sba"` applies the Syntetos-Boylan correction
+`(1 - alpha_interval / 2) * demand_size / interval`.
+
+On a series with no zeros the interval stays at 1, so the forecast
+reduces to simple exponential smoothing of the observations.
+
 ## CLI
 
 ```bash
@@ -72,11 +105,19 @@ python -m ts_forecast.cli data.csv --target value --diagnose --seasonal-period 7
 python -m ts_forecast.cli data.csv --target value --model seasonal_naive_drift
 python -m ts_forecast.cli data.csv --target value --model holt_winters --seasonal-period 7
 python -m ts_forecast.cli data.csv --target value --model sarima --seasonal-period 7
+python -m ts_forecast.cli data.csv --target value --model croston --croston-alpha 0.1
 ```
+
+`--croston-alpha-size` and `--croston-alpha-interval` override the shared
+constant. `--croston-method sba` selects the Syntetos-Boylan correction.
 
 ## Pipeline
 
 `python run.py` fits the existing ML / naive baselines and also scores
-the seasonal-naive + drift ensemble and, when the training series covers
-at least two seasons, the SARIMA(1, 1, 1)(1, 0, 1)s diagnostic. Both
-reports are written into `output/results.json`.
+the seasonal-naive + drift ensemble, the Croston intermittent-demand
+forecast, and, when the training series covers at least two seasons, the
+SARIMA(1, 1, 1)(1, 0, 1)s diagnostic. The reports, including the smoothed
+Croston demand size, interval, and rate, are written into
+`output/results.json`. The synthetic pipeline series is strictly positive,
+so Croston's interval smooths to 1 and the rate is simple exponential
+smoothing of that series.

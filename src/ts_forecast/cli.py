@@ -4,6 +4,7 @@ import argparse
 
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
+    croston_forecast,
     forecast_arima,
     holt_winters_forecast,
     sarima_forecast,
@@ -52,10 +53,17 @@ def build_parser():
     parser.add_argument(
         "--model",
         default="arima",
-        choices=("arima", "holt_winters", "seasonal_naive_drift", "sarima"),
+        choices=(
+            "arima",
+            "holt_winters",
+            "seasonal_naive_drift",
+            "sarima",
+            "croston",
+        ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
-        "fixed SARIMA(1,1,1)(1,0,1)s diagnostic.",
+        "fixed SARIMA(1,1,1)(1,0,1)s diagnostic; croston smooths intermittent "
+        "demand size and inter-demand interval separately.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -74,6 +82,30 @@ def build_parser():
         default="equal",
         choices=("equal", "inverse_mae"),
         help="How to blend seasonal-naive and drift when using that model or --diagnose",
+    )
+    parser.add_argument(
+        "--croston-alpha",
+        type=float,
+        default=0.1,
+        help="Shared Croston smoothing constant for demand size and interval",
+    )
+    parser.add_argument(
+        "--croston-alpha-size",
+        type=float,
+        default=None,
+        help="Demand-size smoothing constant; overrides --croston-alpha",
+    )
+    parser.add_argument(
+        "--croston-alpha-interval",
+        type=float,
+        default=None,
+        help="Inter-demand interval smoothing constant; overrides --croston-alpha",
+    )
+    parser.add_argument(
+        "--croston-method",
+        default="croston",
+        choices=("croston", "sba"),
+        help="Croston ratio or the Syntetos-Boylan bias correction",
     )
     return parser
 
@@ -119,6 +151,17 @@ def run_cli(args):
             seasonal_period=args.seasonal_period,
         )
         title = "SARIMA(1,1,1)(1,0,1)s forecast metrics"
+    elif args.model == "croston":
+        forecast = croston_forecast(
+            train,
+            args.target,
+            steps=steps,
+            alpha=args.croston_alpha,
+            alpha_size=args.croston_alpha_size,
+            alpha_interval=args.croston_alpha_interval,
+            method=args.croston_method,
+        )
+        title = "Croston intermittent-demand forecast metrics"
     else:
         forecast = seasonal_naive_drift_forecast(
             train,

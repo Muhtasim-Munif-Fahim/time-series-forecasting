@@ -13,7 +13,11 @@ from models import (
     moving_average_forecast, naive_forecast,
 )
 from ts_forecast.evaluation import sarima_diagnostic, seasonal_naive_drift_diagnostic
-from ts_forecast.models import seasonal_naive_drift_forecast
+from ts_forecast.models import (
+    croston_forecast,
+    fit_croston,
+    seasonal_naive_drift_forecast,
+)
 
 
 def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict:
@@ -73,6 +77,20 @@ def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict
         },
     }
 
+    croston_fit = fit_croston(train, "value")
+    croston_preds = croston_forecast(train, "value", steps=horizon)
+    results["croston"] = compute_metrics(test["value"].values, croston_preds)
+    croston_summary = {
+        "method": croston_fit["method"],
+        "demand_size": croston_fit["demand_size"],
+        "interval": croston_fit["interval"],
+        "rate": croston_fit["rate"],
+        "forecast_level": croston_fit["forecast_level"],
+        "alpha_size": croston_fit["alpha_size"],
+        "alpha_interval": croston_fit["alpha_interval"],
+        "n_demands": croston_fit["n_demands"],
+    }
+
     sarima_summary = None
     finite_train = train["value"].dropna()
     if len(finite_train) >= 2 * seasonal_period:
@@ -109,6 +127,7 @@ def run_pipeline(output_dir: str | Path = "output", n_points: int = 500) -> dict
         "results": results,
         "seasonal_naive_drift_diagnostic": diagnostic_summary,
         "sarima_diagnostic": sarima_summary,
+        "croston": croston_summary,
     }
     (output / "results.json").write_text(json.dumps(summary, indent=2))
     df.to_csv(output / "time_series.csv", index=False)
