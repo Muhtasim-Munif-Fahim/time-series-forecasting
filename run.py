@@ -45,6 +45,16 @@ def main() -> int:
                 f"RMSE={metrics['rmse']:.4f}  MAPE={metrics['mape']:.2f}"
             )
 
+    croston = results.get("croston")
+    if croston:
+        print("\nCroston intermittent-demand forecast")
+        print(
+            f"  demands={croston['n_demands']}  "
+            f"size={croston['demand_size']:.4f}  "
+            f"interval={croston['interval']:.4f}  "
+            f"rate={croston['rate']:.4f}"
+        )
+
     print(f"\nResults saved to output/results.json")
     return 0
 

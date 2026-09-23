@@ -545,21 +545,48 @@ def baseline_prediction_interval(
     }
 
 
+def _ses_level_and_alpha(values, alpha=None):
+    """Smooth a series with simple exponential smoothing.
+
+    The level starts at the first observation, matching Hyndman's
+    ``initial="simple"`` scheme. When ``alpha`` is omitted, the constant on
+    the grid ``[0.01, 0.99]`` that minimizes one-step squared error is
+    chosen and ties keep the smaller constant. A one-point series cannot
+    be smoothed, so the observation is returned with ``alpha`` left unset.
+    """
+
+    values = np.asarray(values, dtype=float).ravel()
+    if values.size == 0:
+        raise ValueError("series must contain at least one observation")
+    if alpha is None:
+        if values.size == 1:
+            return float(values[0]), None
+        best_sse = np.inf
+        best_level = float(values[-1])
+        best_alpha = None
+        for candidate in np.linspace(0.01, 0.99, 99):
+            level = float(values[0])
+            sse = 0.0
+            for observed in values[1:]:
+                sse += (observed - level) ** 2
+                level += candidate * (observed - level)
+            if sse < best_sse:
+                best_sse = sse
+                best_level = level
+                best_alpha = float(candidate)
+        return best_level, best_alpha
+
+    level = float(values[0])
+    for observed in values[1:]:
+        level += alpha * (observed - level)
+    return level, float(alpha)
+
+
 def _ses_forecast_level(values):
     """Return the fitted simple-exponential-smoothing level of a series."""
 
-    best_sse = np.inf
-    best_level = float(values[-1])
-    for alpha in np.linspace(0.01, 0.99, 99):
-        level = float(values[0])
-        sse = 0.0
-        for observed in values[1:]:
-            sse += (observed - level) ** 2
-            level += alpha * (observed - level)
-        if sse < best_sse:
-            best_sse = sse
-            best_level = level
-    return best_level
+    level, _alpha = _ses_level_and_alpha(values)
+    return level
 
 
 def theta_forecast(train, target_col, steps=1, seasonal_period=None):
@@ -721,6 +748,168 @@ def sarima_forecast(train, target_col, steps=1, seasonal_period=7):
         raise ValueError("steps must be at least 1")
     fitted = fit_sarima(train, target_col, seasonal_period=seasonal_period)
     return np.asarray(fitted.forecast(steps=steps), dtype=float)
+
+
+def _require_open_unit_alpha(alpha, name):
+    if isinstance(alpha, bool):
+        raise ValueError(f"{name} must be a float strictly between 0 and 1")
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{name} must be a float strictly between 0 and 1"
+        ) from None
+    if not np.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError(f"{name} must be a float strictly between 0 and 1")
+    return alpha
+
+
+def _resolve_croston_alpha(alpha, override, name):
+    if override is not None:
+        return _require_open_unit_alpha(override, name)
+    if alpha is not None:
+        return _require_open_unit_alpha(alpha, "alpha")
+    return None
+
+
+def _croston_training_values(train, target_col):
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size == 0:
+        raise ValueError("training data must contain at least one observation")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+    if np.any(values < 0):
+        raise ValueError("Croston requires non-negative demand")
+    return values
+
+
+def _croston_occurrences(values):
+    """Split a demand series into sizes and inter-demand intervals.
+
+    Intervals are counted in periods, including the gap from the start of
+    the series to the first positive demand. Zeros do not update either
+    component; they only lengthen the next interval.
+    """
+
+    positions = np.flatnonzero(values > 0)
+    if positions.size == 0:
+        raise ValueError("Croston requires at least one positive demand")
+    sizes = np.asarray(values[positions], dtype=float)
+    intervals = np.empty(positions.size, dtype=float)
+    intervals[0] = float(positions[0] + 1)
+    if positions.size > 1:
+        intervals[1:] = np.diff(positions).astype(float)
+    return sizes, intervals
+
+
+def fit_croston(
+    train,
+    target_col,
+    alpha=0.1,
+    alpha_size=None,
+    alpha_interval=None,
+    method="croston",
+):
+    """Smooth demand size and inter-demand interval separately.
+
+    Croston's method is the intermittent-demand counterpart of the
+    seasonal-naive + drift ensemble and the SARIMA diagnostic. Those
+    baselines expect an observation every period. Croston instead extracts
+    each positive demand and the number of periods since the previous one,
+    then applies simple exponential smoothing to the two series on their
+    own. The per-period rate is ``demand_size / interval``.
+
+    ``alpha`` is the shared smoothing constant (Croston's usual default is
+    ``0.1``). ``alpha_size`` and ``alpha_interval`` override it for one
+    component, so a jumpy order quantity can be smoothed faster than a
+    stable gap, or the other way around. Pass ``alpha=None`` (and leave
+    the override unset) to choose that component's constant by minimizing
+    one-step squared error. The level is initialized at the first demand.
+    Trailing zeros after the last order do not revise the interval until
+    another demand arrives.
+
+    ``method="croston"`` forecasts the raw ratio. ``method="sba"`` applies
+    the Syntetos-Boylan correction
+    ``(1 - alpha_interval / 2) * demand_size / interval``, which offsets
+    the upward bias of dividing two smoothed estimates. The correction
+    uses the interval constant because that is the source of the bias.
+
+    Returns a dict with the final ``demand_size``, ``interval``, unsmoothed
+    ``rate``, bias-adjusted ``forecast_level``, the constants actually
+    used, and the occurrence series the smoother saw.
+    """
+
+    if method not in {"croston", "sba"}:
+        raise ValueError("method must be 'croston' or 'sba'")
+    values = _croston_training_values(train, target_col)
+    sizes, intervals = _croston_occurrences(values)
+    size_alpha = _resolve_croston_alpha(alpha, alpha_size, "alpha_size")
+    interval_alpha = _resolve_croston_alpha(
+        alpha, alpha_interval, "alpha_interval"
+    )
+    demand_size, fitted_size_alpha = _ses_level_and_alpha(sizes, size_alpha)
+    interval, fitted_interval_alpha = _ses_level_and_alpha(
+        intervals, interval_alpha
+    )
+    if method == "sba":
+        if fitted_interval_alpha is None:
+            raise ValueError(
+                "sba requires an interval smoothing constant when only one "
+                "demand is observed"
+            )
+        correction = 1.0 - fitted_interval_alpha / 2.0
+    else:
+        correction = 1.0
+    rate = float(demand_size) / float(interval)
+    return {
+        "demand_size": float(demand_size),
+        "interval": float(interval),
+        "rate": rate,
+        "forecast_level": correction * rate,
+        "alpha_size": (
+            None if fitted_size_alpha is None else float(fitted_size_alpha)
+        ),
+        "alpha_interval": (
+            None
+            if fitted_interval_alpha is None
+            else float(fitted_interval_alpha)
+        ),
+        "method": method,
+        "n_demands": int(sizes.size),
+        "demand_sizes": sizes,
+        "intervals": intervals,
+    }
+
+
+def croston_forecast(
+    train,
+    target_col,
+    steps=1,
+    alpha=0.1,
+    alpha_size=None,
+    alpha_interval=None,
+    method="croston",
+):
+    """Forecast intermittent demand with Croston's method.
+
+    See :func:`fit_croston`. The point forecast is flat: every horizon
+    step repeats the per-period rate (or the Syntetos-Boylan correction
+    of that rate). Returns a numpy array of length ``steps``.
+    """
+
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_croston(
+        train,
+        target_col,
+        alpha=alpha,
+        alpha_size=alpha_size,
+        alpha_interval=alpha_interval,
+        method=method,
+    )
+    return np.full(steps, fitted["forecast_level"], dtype=float)
 
 
 def evaluate_forecast(y_true, y_pred):
