@@ -28,6 +28,7 @@ tests/test_changepoints.py
 tests/test_conformal_recalibration.py
 tests/test_core.py
 tests/test_coverage_straddle.py
+tests/test_croston.py
 tests/test_crps.py
 tests/test_data.py
 tests/test_diagnostics_bundle.py
@@ -50,6 +51,7 @@ tests/test_outlier_detection.py
 tests/test_overall_weighted_average.py
 tests/test_plot_decomposition.py
 tests/test_quantile_crossing.py
+tests/test_sarima.py
 tests/test_seasonal_decomposition.py
 tests/test_seasonal_naive_auto.py
 tests/test_seasonal_naive_drift.py
@@ -58,3 +60,4 @@ tests/test_skill_score.py
 tests/test_stationarity.py
 tests/test_theils_u.py
 tests/test_top_down_reconciliation.py
+tests/test_tsb.py

@@ -912,6 +912,107 @@ def croston_forecast(
     return np.full(steps, fitted["forecast_level"], dtype=float)
 
 
+
+def fit_tsb(
+    train,
+    target_col,
+    alpha=0.1,
+    alpha_probability=None,
+    alpha_demand=None,
+):
+    """Teunter–Syntetos–Babai intermittent-demand smoother.
+
+    Croston updates the inter-demand interval only when a positive order
+    arrives. TSB instead tracks a per-period **demand probability** that
+    is revised every step: after a positive demand it is smoothed toward
+    1, and after a zero it is smoothed toward 0. Demand size is updated
+    only on positive observations, exactly as in Croston. The one-step
+    rate is ``probability * demand_size``.
+
+    ``alpha`` is the shared smoothing constant (default ``0.1``).
+    ``alpha_probability`` and ``alpha_demand`` override it for one
+    component. Both constants must lie in ``(0, 1)``.
+
+    Initialisation uses the first positive demand (size = that demand,
+    probability = 1). Leading zeros before that demand are ignored.
+    Subsequent zeros pull the probability toward 0.
+
+    Returns a dict with the final ``probability``, ``demand_size``,
+    ``forecast_level``, the constants actually used, and the occurrence
+    series the smoother saw.
+    """
+
+    values = _croston_training_values(train, target_col)
+    positives = np.flatnonzero(values > 0)
+    if positives.size == 0:
+        raise ValueError("TSB requires at least one positive demand")
+    if alpha_probability is not None:
+        use_p = _require_open_unit_alpha(alpha_probability, "alpha_probability")
+    else:
+        use_p = _require_open_unit_alpha(
+            0.1 if alpha is None else alpha, "alpha"
+        )
+    if alpha_demand is not None:
+        use_d = _require_open_unit_alpha(alpha_demand, "alpha_demand")
+    else:
+        use_d = _require_open_unit_alpha(
+            0.1 if alpha is None else alpha, "alpha"
+        )
+
+    sizes, _ = _croston_occurrences(values)
+    indicators = (values > 0).astype(float)
+
+    first = int(positives[0])
+    demand_size = float(values[first])
+    probability = 1.0
+    for t in range(first + 1, values.size):
+        if values[t] > 0:
+            demand_size = use_d * float(values[t]) + (1.0 - use_d) * demand_size
+            probability = use_p * 1.0 + (1.0 - use_p) * probability
+        else:
+            probability = use_p * 0.0 + (1.0 - use_p) * probability
+
+    forecast_level = float(probability) * float(demand_size)
+    return {
+        "probability": float(probability),
+        "demand_size": float(demand_size),
+        "forecast_level": forecast_level,
+        "alpha_probability": float(use_p),
+        "alpha_demand": float(use_d),
+        "n_demands": int(sizes.size),
+        "demand_sizes": sizes,
+        "indicators": indicators,
+    }
+
+
+def tsb_forecast(
+    train,
+    target_col,
+    steps=1,
+    alpha=0.1,
+    alpha_probability=None,
+    alpha_demand=None,
+):
+    """Forecast intermittent demand with the TSB method.
+
+    See :func:`fit_tsb`. The point forecast is flat: every horizon step
+    repeats ``probability * demand_size``. Returns a numpy array of length
+    ``steps``.
+    """
+
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_tsb(
+        train,
+        target_col,
+        alpha=alpha,
+        alpha_probability=alpha_probability,
+        alpha_demand=alpha_demand,
+    )
+    return np.full(steps, fitted["forecast_level"], dtype=float)
+
+
+
 def evaluate_forecast(y_true, y_pred):
     return {
         "mae": mean_absolute_error(y_true, y_pred),
