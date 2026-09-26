@@ -106,6 +106,7 @@ python -m ts_forecast.cli data.csv --target value --model seasonal_naive_drift
 python -m ts_forecast.cli data.csv --target value --model holt_winters --seasonal-period 7
 python -m ts_forecast.cli data.csv --target value --model sarima --seasonal-period 7
 python -m ts_forecast.cli data.csv --target value --model croston --croston-alpha 0.1
+python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
@@ -121,3 +122,24 @@ Croston demand size, interval, and rate, are written into
 `output/results.json`. The synthetic pipeline series is strictly positive,
 so Croston's interval smooths to 1 and the rate is simple exponential
 smoothing of that series.
+
+## TSB intermittent demand (Teunter–Syntetos–Babai)
+
+Theta, Croston/SBA, Holt-Winters, and SARIMA already cover smooth and
+intermittent baselines. TSB is the probability-based peer to Croston: every
+period updates a demand **probability** (toward 1 on a hit, toward 0 on a
+zero) while demand size updates only on positive observations. The flat
+forecast is ``probability * demand_size``.
+
+```python
+from ts_forecast.models import fit_tsb, tsb_forecast
+
+fitted = fit_tsb(train, "value", alpha_probability=0.2, alpha_demand=0.1)
+forecast = tsb_forecast(train, "value", steps=8, alpha=0.1)
+print(fitted["probability"], fitted["demand_size"], forecast[:3])
+```
+
+```bash
+python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
+```
+

@@ -5,6 +5,7 @@ import argparse
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
     croston_forecast,
+    tsb_forecast,
     forecast_arima,
     holt_winters_forecast,
     sarima_forecast,
@@ -59,11 +60,13 @@ def build_parser():
             "seasonal_naive_drift",
             "sarima",
             "croston",
+            "tsb",
         ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
         "fixed SARIMA(1,1,1)(1,0,1)s diagnostic; croston smooths intermittent "
-        "demand size and inter-demand interval separately.",
+        "demand size and inter-demand interval separately; tsb is the "
+        "Teunter-Syntetos-Babai probability smoother for intermittent demand.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -106,6 +109,24 @@ def build_parser():
         default="croston",
         choices=("croston", "sba"),
         help="Croston ratio or the Syntetos-Boylan bias correction",
+    )
+    parser.add_argument(
+        "--tsb-alpha",
+        type=float,
+        default=0.1,
+        help="Shared TSB smoothing constant for probability and demand size",
+    )
+    parser.add_argument(
+        "--tsb-alpha-probability",
+        type=float,
+        default=None,
+        help="Demand-probability smoothing constant; overrides --tsb-alpha",
+    )
+    parser.add_argument(
+        "--tsb-alpha-demand",
+        type=float,
+        default=None,
+        help="Demand-size smoothing constant; overrides --tsb-alpha",
     )
     return parser
 
@@ -162,6 +183,16 @@ def run_cli(args):
             method=args.croston_method,
         )
         title = "Croston intermittent-demand forecast metrics"
+    elif args.model == "tsb":
+        forecast = tsb_forecast(
+            train,
+            args.target,
+            steps=steps,
+            alpha=args.tsb_alpha,
+            alpha_probability=args.tsb_alpha_probability,
+            alpha_demand=args.tsb_alpha_demand,
+        )
+        title = "TSB intermittent-demand forecast metrics"
     else:
         forecast = seasonal_naive_drift_forecast(
             train,
