@@ -1006,6 +1006,20 @@ def coverage_straddle_test(
 
 
 
+def _granger_tests(granger, data, max_lag):
+    """Call ``grangercausalitytests`` across statsmodels versions.
+
+    statsmodels < 0.15 prints a summary unless ``verbose=False``; 0.15
+    removed the argument (and the printing), so retry without it.
+    """
+    try:
+        return granger(data, maxlag=max_lag, verbose=False)
+    except TypeError as exc:
+        if "verbose" not in str(exc):
+            raise
+        return granger(data, maxlag=max_lag)
+
+
 def granger_causality_matrix(
     frame,
     columns,
@@ -1057,7 +1071,7 @@ def granger_causality_matrix(
             if sub.shape[0] <= max_lag + 1:
                 continue
             try:
-                result = _granger(sub[[effect, cause]], maxlag=max_lag, verbose=False)
+                result = _granger_tests(_granger, sub[[effect, cause]], max_lag)
             except Exception:
                 continue
             try:

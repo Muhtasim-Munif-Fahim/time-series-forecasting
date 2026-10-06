@@ -107,6 +107,7 @@ python -m ts_forecast.cli data.csv --target value --model holt_winters --seasona
 python -m ts_forecast.cli data.csv --target value --model sarima --seasonal-period 7
 python -m ts_forecast.cli data.csv --target value --model croston --croston-alpha 0.1
 python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
+python -m ts_forecast.cli data.csv --target value --model adida --adida-base ses
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
@@ -143,3 +144,33 @@ print(fitted["probability"], fitted["demand_size"], forecast[:3])
 python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
 ```
 
+## ADIDA temporal aggregation (Aggregate–Disaggregate Intermittent Demand)
+
+Croston, SBA, and TSB model intermittency directly. ADIDA (Nikolopoulos et
+al., 2011) removes much of it first: demand that is mostly zeros day by day is
+often smooth week by week. `fit_adida` sums the series into non-overlapping
+buckets of `aggregation_level` periods, aligned to the end of the training
+data so the latest bucket is complete. It then forecasts the bucket totals
+with a base method (`"ses"` by default, or `"croston"`, `"sba"`, `"tsb"`) and
+spreads that forecast equally over the bucket's periods.
+
+```python
+from ts_forecast.models import adida_forecast, fit_adida
+
+fitted = fit_adida(train, "value")             # bucket = rounded mean inter-demand interval
+print(fitted["aggregation_level"], fitted["adi"], fitted["forecast_level"])
+
+weekly = adida_forecast(train, "value", steps=14, aggregation_level=7, base_method="croston")
+```
+
+`aggregation_level=None` uses the rounded mean inter-demand interval (ADI),
+so roughly one order lands in each bucket. Passing the season length
+aggregates seasonality away instead. `aggregation_level=1` reduces to the
+base method on the raw series. `alpha` is the base method's smoothing
+constant: for SES it is chosen by one-step squared error when omitted, and
+the Croston family defaults to `0.1`.
+
+```bash
+python -m ts_forecast.cli data.csv --target value --model adida \
+  --adida-level 7 --adida-base croston --adida-alpha 0.1
+```
