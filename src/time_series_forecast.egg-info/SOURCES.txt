@@ -17,6 +17,7 @@ src/ts_forecast/prophet_model.py
 src/ts_forecast/tuning.py
 src/ts_forecast/visualization.py
 tests/test_acf_pacf.py
+tests/test_adida.py
 tests/test_aggregate_horizons.py
 tests/test_analysis.py
 tests/test_backtest_stability.py

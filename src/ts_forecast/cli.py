@@ -4,6 +4,7 @@ import argparse
 
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
+    adida_forecast,
     croston_forecast,
     tsb_forecast,
     forecast_arima,
@@ -61,12 +62,15 @@ def build_parser():
             "sarima",
             "croston",
             "tsb",
+            "adida",
         ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
         "fixed SARIMA(1,1,1)(1,0,1)s diagnostic; croston smooths intermittent "
         "demand size and inter-demand interval separately; tsb is the "
-        "Teunter-Syntetos-Babai probability smoother for intermittent demand.",
+        "Teunter-Syntetos-Babai probability smoother for intermittent demand; "
+        "adida aggregates into buckets, forecasts the totals, and spreads "
+        "them back over the periods.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -127,6 +131,25 @@ def build_parser():
         type=float,
         default=None,
         help="Demand-size smoothing constant; overrides --tsb-alpha",
+    )
+    parser.add_argument(
+        "--adida-level",
+        type=int,
+        default=None,
+        help="ADIDA bucket size in periods (default: rounded mean inter-demand interval)",
+    )
+    parser.add_argument(
+        "--adida-base",
+        default="ses",
+        choices=("ses", "croston", "sba", "tsb"),
+        help="Method used to forecast the ADIDA bucket totals",
+    )
+    parser.add_argument(
+        "--adida-alpha",
+        type=float,
+        default=None,
+        help="Smoothing constant for the ADIDA base method "
+        "(default: optimized for ses, 0.1 otherwise)",
     )
     return parser
 
@@ -193,6 +216,16 @@ def run_cli(args):
             alpha_demand=args.tsb_alpha_demand,
         )
         title = "TSB intermittent-demand forecast metrics"
+    elif args.model == "adida":
+        forecast = adida_forecast(
+            train,
+            args.target,
+            steps=steps,
+            aggregation_level=args.adida_level,
+            base_method=args.adida_base,
+            alpha=args.adida_alpha,
+        )
+        title = "ADIDA intermittent-demand forecast metrics"
     else:
         forecast = seasonal_naive_drift_forecast(
             train,

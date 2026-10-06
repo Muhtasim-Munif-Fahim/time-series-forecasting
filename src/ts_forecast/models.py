@@ -1012,6 +1012,150 @@ def tsb_forecast(
     return np.full(steps, fitted["forecast_level"], dtype=float)
 
 
+_ADIDA_BASE_METHODS = ("ses", "croston", "sba", "tsb")
+
+
+def _resolve_adida_level(values, aggregation_level):
+    """Return the bucket size ``k`` and the mean inter-demand interval."""
+
+    positions = np.flatnonzero(values > 0)
+    if positions.size == 0:
+        raise ValueError("ADIDA requires at least one positive demand")
+    _sizes, intervals = _croston_occurrences(values)
+    adi = float(np.mean(intervals))
+    if aggregation_level is None:
+        level = max(1, int(np.floor(adi + 0.5)))
+    else:
+        if (
+            isinstance(aggregation_level, bool)
+            or not isinstance(aggregation_level, (int, np.integer))
+            or aggregation_level < 1
+        ):
+            raise ValueError("aggregation_level must be a positive integer")
+        level = int(aggregation_level)
+    if level > values.size:
+        raise ValueError(
+            "aggregation_level cannot exceed the number of training observations"
+        )
+    return level, adi
+
+
+def fit_adida(
+    train,
+    target_col,
+    aggregation_level=None,
+    base_method="ses",
+    alpha=None,
+):
+    """Aggregate-Disaggregate Intermittent Demand Approach (ADIDA).
+
+    Nikolopoulos, Syntetos, Boylan, Petropoulos and Assimakopoulos (2011)
+    observed that intermittency is partly an artefact of the time bucket:
+    daily demand with many zeros is often smooth at the weekly level.
+    ADIDA therefore
+
+    1. sums the series into non-overlapping buckets of
+       ``aggregation_level`` periods, aligned to the **end** of the
+       training data so the latest bucket is complete (the oldest
+       ``n % aggregation_level`` observations are dropped);
+    2. forecasts the bucket totals with a base method -- simple
+       exponential smoothing (``"ses"``, default), ``"croston"``,
+       ``"sba"``, or ``"tsb"``;
+    3. disaggregates by spreading the bucket forecast equally over its
+       periods, ``per_period = bucket_forecast / aggregation_level``.
+
+    ``aggregation_level=None`` uses the rounded mean inter-demand interval
+    (ADI), the common default: at that level roughly one order lands in
+    each bucket, so most of the zeros disappear. Passing the season
+    length instead aggregates seasonality away. ``aggregation_level=1``
+    reduces ADIDA to the base method on the raw series.
+
+    ``alpha`` is passed to the base method. For ``"ses"`` it is the
+    smoothing constant, chosen by one-step squared error on the bucket
+    series when ``None``. For Croston/SBA/TSB, ``None`` means each
+    method's default constant of ``0.1``. A single bucket cannot be
+    smoothed and is forecast as itself.
+
+    Demand must be non-negative and finite, with at least one positive
+    observation. Returns a dict with the ``aggregation_level`` used, the
+    training ``adi``, the ``aggregated`` bucket totals, the
+    ``bucket_forecast``, the per-period ``forecast_level``, the
+    ``base_method``, the base ``alpha`` actually used (``None`` when not
+    applicable), and ``n_dropped`` leading observations.
+    """
+
+    if base_method not in _ADIDA_BASE_METHODS:
+        raise ValueError(
+            "base_method must be one of: " + ", ".join(_ADIDA_BASE_METHODS)
+        )
+    values = _croston_training_values(train, target_col)
+    level, adi = _resolve_adida_level(values, aggregation_level)
+
+    n_buckets = values.size // level
+    n_dropped = values.size - n_buckets * level
+    aggregated = values[n_dropped:].reshape(n_buckets, level).sum(axis=1)
+
+    if alpha is not None:
+        alpha = _require_open_unit_alpha(alpha, "alpha")
+    if base_method == "ses":
+        bucket_forecast, used_alpha = _ses_level_and_alpha(aggregated, alpha)
+    else:
+        frame = pd.DataFrame({target_col: aggregated})
+        base_alpha = 0.1 if alpha is None else alpha
+        if not np.any(aggregated > 0):
+            # Only possible when the dropped leading periods held every order.
+            raise ValueError("ADIDA requires at least one positive bucket")
+        if base_method == "tsb":
+            fitted = fit_tsb(frame, target_col, alpha=base_alpha)
+            used_alpha = fitted["alpha_probability"]
+        else:
+            fitted = fit_croston(
+                frame, target_col, alpha=base_alpha, method=base_method
+            )
+            used_alpha = fitted["alpha_size"]
+        bucket_forecast = fitted["forecast_level"]
+
+    bucket_forecast = float(bucket_forecast)
+    return {
+        "aggregation_level": int(level),
+        "adi": adi,
+        "aggregated": aggregated,
+        "bucket_forecast": bucket_forecast,
+        "forecast_level": bucket_forecast / level,
+        "base_method": base_method,
+        "alpha": None if used_alpha is None else float(used_alpha),
+        "n_buckets": int(n_buckets),
+        "n_dropped": int(n_dropped),
+    }
+
+
+def adida_forecast(
+    train,
+    target_col,
+    steps=1,
+    aggregation_level=None,
+    base_method="ses",
+    alpha=None,
+):
+    """Forecast intermittent demand with ADIDA temporal aggregation.
+
+    See :func:`fit_adida`. The point forecast is flat: every horizon step
+    repeats ``bucket_forecast / aggregation_level``. Returns a numpy array
+    of length ``steps``.
+    """
+
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_adida(
+        train,
+        target_col,
+        aggregation_level=aggregation_level,
+        base_method=base_method,
+        alpha=alpha,
+    )
+    return np.full(steps, fitted["forecast_level"], dtype=float)
+
+
 
 def evaluate_forecast(y_true, y_pred):
     return {
