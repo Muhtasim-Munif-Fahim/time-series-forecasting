@@ -174,3 +174,19 @@ the Croston family defaults to `0.1`.
 python -m ts_forecast.cli data.csv --target value --model adida \
   --adida-level 7 --adida-base croston --adida-alpha 0.1
 ```
+
+
+## Fourier regression seasonality
+
+`fourier_regression_forecast` fits a linear model with optional trend and
+Fourier terms for one or more seasonal periods (Harvey / TBATS-style
+seasonality without Box-Cox or ARMA). Useful when you want an explicit
+harmonic seasonal pattern that extrapolates cleanly.
+
+```python
+from ts_forecast.models import fourier_regression_forecast
+
+forecast = fourier_regression_forecast(
+    train, "value", steps=14, seasonal_period=7, n_harmonics=3
+)
+```

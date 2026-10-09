@@ -1601,3 +1601,105 @@ def reconcile_optimal(forecasts, structure, method="ols", residuals=None):
     leaf_solution, *_ = np.linalg.lstsq(scaled_design, scaled_targets, rcond=None)
     rebuilt = summing @ leaf_solution
     return {node: rebuilt[position] for position, node in enumerate(nodes)}
+
+
+def _fourier_design(time_index, periods, n_harmonics):
+    """Build intercept + Fourier terms for one or more seasonal periods."""
+    t = np.asarray(time_index, dtype=float).ravel()
+    columns = [np.ones(t.size)]
+    for period in periods:
+        period = float(period)
+        if period < 2.0:
+            raise ValueError("each seasonal period must be at least 2")
+        for harmonic in range(1, int(n_harmonics) + 1):
+            angle = 2.0 * np.pi * harmonic * t / period
+            columns.append(np.sin(angle))
+            columns.append(np.cos(angle))
+    return np.column_stack(columns)
+
+
+def fit_fourier_regression(
+    train,
+    target_col,
+    *,
+    seasonal_period=7,
+    n_harmonics=3,
+    include_trend=True,
+):
+    """Fit a linear regression of the series on Fourier seasonal terms.
+
+    Models ``y_t = a + b t + sum_k [s_k sin(2π k t / m) + c_k cos(...)]``
+    by ordinary least squares (Harvey, 1989; TBATS-style Fourier seasonality
+    without the Box-Cox / ARMA layers). Multiple periods may be passed as a
+    sequence (e.g. ``(7, 365.25)`` for weekly + yearly).
+
+    Returns a dict with coefficients, design metadata, fitted values, and
+    residual standard deviation.
+    """
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if values.size < 3:
+        raise ValueError("training data must contain at least three observations")
+    if isinstance(seasonal_period, (int, float)):
+        periods = (float(seasonal_period),)
+    else:
+        periods = tuple(float(p) for p in seasonal_period)
+    if not periods:
+        raise ValueError("seasonal_period must be non-empty")
+    if (
+        not isinstance(n_harmonics, (int, np.integer))
+        or isinstance(n_harmonics, bool)
+        or int(n_harmonics) < 1
+    ):
+        raise ValueError("n_harmonics must be a positive integer")
+    n_harmonics = int(n_harmonics)
+
+    time = np.arange(values.size, dtype=float)
+    design = _fourier_design(time, periods, n_harmonics)
+    if include_trend:
+        design = np.column_stack([design, time])
+
+    coef, residuals, rank, _ = np.linalg.lstsq(design, values, rcond=None)
+    fitted = design @ coef
+    dof = max(values.size - design.shape[1], 1)
+    resid = values - fitted
+    sigma = float(np.sqrt(np.sum(resid * resid) / dof))
+    return {
+        "coefficients": coef,
+        "periods": periods,
+        "n_harmonics": n_harmonics,
+        "include_trend": bool(include_trend),
+        "n_obs": int(values.size),
+        "fitted": fitted,
+        "sigma": sigma,
+        "rank": int(rank),
+    }
+
+
+def fourier_regression_forecast(
+    train,
+    target_col,
+    steps=1,
+    seasonal_period=7,
+    n_harmonics=3,
+    include_trend=True,
+):
+    """Forecast with a Fourier-seasonality linear regression.
+
+    Fits :func:`fit_fourier_regression` on the training series and evaluates
+    the design matrix on the next ``steps`` time indices.
+    """
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_fourier_regression(
+        train,
+        target_col,
+        seasonal_period=seasonal_period,
+        n_harmonics=n_harmonics,
+        include_trend=include_trend,
+    )
+    n_obs = fitted["n_obs"]
+    horizon = np.arange(n_obs, n_obs + steps, dtype=float)
+    design = _fourier_design(horizon, fitted["periods"], fitted["n_harmonics"])
+    if fitted["include_trend"]:
+        design = np.column_stack([design, horizon])
+    return design @ fitted["coefficients"]
