@@ -37,6 +37,7 @@ tests/test_diebold_mariano.py
 tests/test_directional_accuracy.py
 tests/test_drift_intervals.py
 tests/test_forecast_accuracy.py
+tests/test_fourier_regression.py
 tests/test_granger_causality.py
 tests/test_holt_winters.py
 tests/test_imputation.py

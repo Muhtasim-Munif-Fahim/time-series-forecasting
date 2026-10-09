@@ -9,6 +9,7 @@ from ts_forecast.models import (
     tsb_forecast,
     forecast_arima,
     holt_winters_forecast,
+    fourier_regression_forecast,
     sarima_forecast,
     seasonal_naive_drift_forecast,
 )
@@ -58,6 +59,7 @@ def build_parser():
         choices=(
             "arima",
             "holt_winters",
+            "fourier_regression",
             "seasonal_naive_drift",
             "sarima",
             "croston",
@@ -177,6 +179,15 @@ def run_cli(args):
         order = tuple(map(int, args.order.split(",")))
         forecast = forecast_arima(train, args.target, order=order, steps=steps)
         title = f"ARIMA{order} forecast metrics"
+
+    elif args.model == "fourier_regression":
+        forecast = fourier_regression_forecast(
+            train,
+            args.target,
+            steps=args.steps,
+            seasonal_period=args.seasonal_period or 7,
+            n_harmonics=getattr(args, "n_harmonics", 3) or 3,
+        )
     elif args.model == "holt_winters":
         forecast = holt_winters_forecast(
             train,
