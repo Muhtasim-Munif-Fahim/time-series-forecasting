@@ -108,10 +108,40 @@ python -m ts_forecast.cli data.csv --target value --model sarima --seasonal-peri
 python -m ts_forecast.cli data.csv --target value --model croston --croston-alpha 0.1
 python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
 python -m ts_forecast.cli data.csv --target value --model adida --adida-base ses
+python -m ts_forecast.cli data.csv --target value --model imapa --imapa-base auto
+python -m ts_forecast.cli data.csv --target value --classify-demand
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
 constant. `--croston-method sba` selects the Syntetos-Boylan correction.
+
+## Demand classification (SBC) and IMAPA
+
+`classify_demand` places a series in one of the Syntetos-Boylan-Croston
+quadrants using the average inter-demand interval (ADI) and the squared
+coefficient of variation of the non-zero sizes (CV^2). The default
+cut-offs are 1.32 and 0.49:
+
+| | CV^2 <= 0.49 | CV^2 > 0.49 |
+|---|---|---|
+| ADI <= 1.32 | smooth (Croston) | erratic (SBA) |
+| ADI > 1.32 | intermittent (SBA) | lumpy (SBA) |
+
+`fit_imapa` / `imapa_forecast` implement IMAPA (Petropoulos & Kourentzes,
+2015). IMAPA runs ADIDA at every aggregation level from `min_level` to
+`max_level` and averages the per-period forecasts (or takes their median).
+The default `max_level` is `max(2, ceil(ADI))`. This removes the need to
+pick a single bucket size. `base_method="auto"` classifies each aggregated
+series and uses Croston for smooth buckets and SBA for the rest.
+
+```python
+from ts_forecast.models import classify_demand, fit_imapa, imapa_forecast
+
+print(classify_demand(train, "value"))   # adi, cv2, category, recommended_method
+fitted = fit_imapa(train, "value", base_method="auto")
+print(fitted["levels"], fitted["methods"], fitted["forecast_level"])
+forecast = imapa_forecast(train, "value", steps=8)
+```
 
 ## Pipeline
 
