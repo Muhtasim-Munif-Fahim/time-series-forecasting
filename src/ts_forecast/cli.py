@@ -5,6 +5,8 @@ import argparse
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
     adida_forecast,
+    classify_demand,
+    imapa_forecast,
     croston_forecast,
     tsb_forecast,
     forecast_arima,
@@ -65,6 +67,7 @@ def build_parser():
             "croston",
             "tsb",
             "adida",
+            "imapa",
         ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
@@ -72,7 +75,8 @@ def build_parser():
         "demand size and inter-demand interval separately; tsb is the "
         "Teunter-Syntetos-Babai probability smoother for intermittent demand; "
         "adida aggregates into buckets, forecasts the totals, and spreads "
-        "them back over the periods.",
+        "them back over the periods; imapa averages ADIDA over every "
+        "aggregation level from 1 to the mean inter-demand interval.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -153,6 +157,29 @@ def build_parser():
         help="Smoothing constant for the ADIDA base method "
         "(default: optimized for ses, 0.1 otherwise)",
     )
+    parser.add_argument(
+        "--imapa-max-level",
+        type=int,
+        default=None,
+        help="Largest IMAPA aggregation level (default: max(2, ceil(ADI)))",
+    )
+    parser.add_argument(
+        "--imapa-base",
+        default="sba",
+        choices=("ses", "croston", "sba", "tsb", "auto"),
+        help="Per-level IMAPA method; auto picks Croston/SBA by SBC class",
+    )
+    parser.add_argument(
+        "--imapa-combine",
+        default="mean",
+        choices=("mean", "median"),
+        help="How IMAPA combines the per-level forecasts",
+    )
+    parser.add_argument(
+        "--classify-demand",
+        action="store_true",
+        help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
+    )
     return parser
 
 
@@ -162,6 +189,15 @@ def run_cli(args):
     steps = min(int(args.steps), len(test))
     actual = test[args.target].values[:steps]
     weights = None if args.ensemble_weights == "equal" else args.ensemble_weights
+
+    if args.classify_demand:
+        report = classify_demand(train, args.target)
+        print("Syntetos-Boylan-Croston demand classification")
+        print(f"  ADI: {report['adi']:.4f}  CV^2: {report['cv2']:.4f}")
+        print(f"  demands: {report['n_demands']}  zero share: {report['zero_share']:.2%}")
+        print(f"  category: {report['category']}")
+        print(f"  recommended: {report['recommended_method']}")
+        return report
 
     if args.diagnose:
         report = seasonal_naive_drift_diagnostic(
@@ -237,6 +273,16 @@ def run_cli(args):
             alpha=args.adida_alpha,
         )
         title = "ADIDA intermittent-demand forecast metrics"
+    elif args.model == "imapa":
+        forecast = imapa_forecast(
+            train,
+            args.target,
+            steps=steps,
+            max_level=args.imapa_max_level,
+            base_method=args.imapa_base,
+            combine=args.imapa_combine,
+        )
+        title = "IMAPA intermittent-demand forecast metrics"
     else:
         forecast = seasonal_naive_drift_forecast(
             train,

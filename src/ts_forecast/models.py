@@ -1157,6 +1157,207 @@ def adida_forecast(
 
 
 
+_SBC_ADI_CUTOFF = 1.32
+_SBC_CV2_CUTOFF = 0.49
+
+
+def classify_demand(
+    train,
+    target_col,
+    adi_cutoff=_SBC_ADI_CUTOFF,
+    cv2_cutoff=_SBC_CV2_CUTOFF,
+):
+    """Syntetos-Boylan-Croston (SBC) demand-pattern classification.
+
+    Syntetos, Boylan and Croston (2005) split demand series into four
+    quadrants using two statistics:
+
+    * ``adi``: the average inter-demand interval in periods, computed the
+      same way as Croston and ADIDA (the gap from the start of the series
+      to the first order is included);
+    * ``cv2``: the squared coefficient of variation of the **non-zero**
+      demand sizes, ``(sd / mean) ** 2``. It uses the sample standard
+      deviation (``ddof=1``) and is ``0.0`` when only one order exists.
+
+    =================  ==================  =================
+    category           ADI                 CV^2
+    =================  ==================  =================
+    ``smooth``         ``<= adi_cutoff``   ``<= cv2_cutoff``
+    ``erratic``        ``<= adi_cutoff``   ``> cv2_cutoff``
+    ``intermittent``   ``> adi_cutoff``    ``<= cv2_cutoff``
+    ``lumpy``          ``> adi_cutoff``    ``> cv2_cutoff``
+    =================  ==================  =================
+
+    The default cut-offs, ``1.32`` and ``0.49``, are the SBC values. They
+    mark where SBA starts to beat Croston's method in mean squared error.
+    ``recommended_method`` follows that rule: ``"croston"`` for smooth
+    demand and ``"sba"`` for the other three quadrants.
+
+    Returns a dict with ``adi``, ``cv2``, ``n_demands``, ``zero_share``,
+    ``category`` and ``recommended_method``.
+    """
+
+    for name, cutoff in (("adi_cutoff", adi_cutoff), ("cv2_cutoff", cv2_cutoff)):
+        if isinstance(cutoff, bool) or not np.isfinite(cutoff) or cutoff <= 0:
+            raise ValueError(f"{name} must be a positive finite number")
+    if adi_cutoff < 1:
+        raise ValueError("adi_cutoff must be at least 1 (ADI is never below one period)")
+    values = _croston_training_values(train, target_col)
+    sizes, intervals = _croston_occurrences(values)
+    adi = float(np.mean(intervals))
+    if sizes.size > 1:
+        cv2 = float((np.std(sizes, ddof=1) / np.mean(sizes)) ** 2)
+    else:
+        cv2 = 0.0
+    sparse = adi > adi_cutoff
+    variable = cv2 > cv2_cutoff
+    if sparse and variable:
+        category = "lumpy"
+    elif sparse:
+        category = "intermittent"
+    elif variable:
+        category = "erratic"
+    else:
+        category = "smooth"
+    return {
+        "adi": adi,
+        "cv2": cv2,
+        "n_demands": int(sizes.size),
+        "zero_share": float(np.mean(values == 0)),
+        "category": category,
+        "recommended_method": "croston" if category == "smooth" else "sba",
+    }
+
+
+_IMAPA_BASE_METHODS = ("ses", "croston", "sba", "tsb", "auto")
+
+
+def fit_imapa(
+    train,
+    target_col,
+    max_level=None,
+    min_level=1,
+    base_method="sba",
+    alpha=None,
+    combine="mean",
+):
+    """Intermittent Multiple Aggregation Prediction Algorithm (IMAPA).
+
+    Petropoulos and Kourentzes (2015) noted that ADIDA depends on a single
+    bucket size, and that no one size is best for every series. IMAPA
+    runs ADIDA at every aggregation level ``k = min_level .. max_level``
+    and combines the per-period forecasts
+    (``bucket_forecast / k``) by their mean (or median, with
+    ``combine="median"``). Combining across levels reduces the risk of
+    choosing a bad bucket size and usually beats any single fixed level.
+
+    ``max_level=None`` uses ``max(2, ceil(ADI))``, capped at the training
+    length, so the combination runs from the raw series up to roughly
+    one order per bucket. ``base_method`` is the forecaster applied at
+    each level: ``"ses"``, ``"croston"``, ``"sba"`` (default) or
+    ``"tsb"``. With ``"auto"``, each aggregated series is classified with
+    :func:`classify_demand`, and the level uses Croston for smooth buckets
+    and SBA otherwise. This mirrors the per-level method selection in the
+    original algorithm. ``alpha`` is passed to the base method, as in
+    :func:`fit_adida`.
+
+    Returns a dict with the ``levels`` used, the per-level ``level_forecasts``
+    (per period), the per-level ``methods``, the combined
+    ``forecast_level``, ``combine``, and the training ``adi``.
+    """
+
+    if base_method not in _IMAPA_BASE_METHODS:
+        raise ValueError(
+            "base_method must be one of: " + ", ".join(_IMAPA_BASE_METHODS)
+        )
+    if combine not in {"mean", "median"}:
+        raise ValueError("combine must be 'mean' or 'median'")
+    values = _croston_training_values(train, target_col)
+    _level, adi = _resolve_adida_level(values, None)
+    for name, level in (("min_level", min_level), ("max_level", max_level)):
+        if level is None:
+            continue
+        if isinstance(level, bool) or not isinstance(level, (int, np.integer)) or level < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if max_level is None:
+        max_level = max(2, int(np.ceil(adi)), int(min_level))
+        max_level = min(max_level, values.size)
+    if min_level > max_level:
+        raise ValueError("min_level cannot exceed max_level")
+    if max_level > values.size:
+        raise ValueError("max_level cannot exceed the number of training observations")
+
+    frame = pd.DataFrame({target_col: values})
+    levels = []
+    forecasts = []
+    methods = []
+    for k in range(int(min_level), int(max_level) + 1):
+        method = base_method
+        if base_method == "auto":
+            n_drop = values.size % k
+            buckets = values[n_drop:].reshape(-1, k).sum(axis=1)
+            if not np.any(buckets > 0):
+                continue
+            method = classify_demand(
+                pd.DataFrame({target_col: buckets}), target_col
+            )["recommended_method"]
+        try:
+            fitted = fit_adida(
+                frame, target_col, aggregation_level=k, base_method=method, alpha=alpha
+            )
+        except ValueError as exc:
+            if "positive bucket" in str(exc):
+                # Every order fell in the dropped leading periods at this level.
+                continue
+            raise
+        levels.append(k)
+        forecasts.append(fitted["forecast_level"])
+        methods.append(method)
+    if not levels:
+        raise ValueError("no aggregation level produced a forecast")
+
+    level_forecasts = np.asarray(forecasts, dtype=float)
+    combined = (
+        float(np.mean(level_forecasts))
+        if combine == "mean"
+        else float(np.median(level_forecasts))
+    )
+    return {
+        "levels": levels,
+        "level_forecasts": level_forecasts,
+        "methods": methods,
+        "forecast_level": combined,
+        "combine": combine,
+        "adi": adi,
+    }
+
+
+def imapa_forecast(
+    train,
+    target_col,
+    steps=1,
+    max_level=None,
+    min_level=1,
+    base_method="sba",
+    alpha=None,
+    combine="mean",
+):
+    """Flat IMAPA forecast; see :func:`fit_imapa`. Returns ``steps`` values."""
+
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_imapa(
+        train,
+        target_col,
+        max_level=max_level,
+        min_level=min_level,
+        base_method=base_method,
+        alpha=alpha,
+        combine=combine,
+    )
+    return np.full(steps, fitted["forecast_level"], dtype=float)
+
+
 def evaluate_forecast(y_true, y_pred):
     return {
         "mae": mean_absolute_error(y_true, y_pred),
