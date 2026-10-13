@@ -220,3 +220,32 @@ forecast = fourier_regression_forecast(
     train, "value", steps=14, seasonal_period=7, n_harmonics=3
 )
 ```
+
+## Local level / local linear trend (Kalman filter MLE)
+
+`fit_structural_model` fits Harvey's basic structural models in state-space
+form: the local level model (`trend=False`, a random-walk level observed
+with noise; the model behind simple exponential smoothing) and the local
+linear trend model (`trend=True`, adding a random-walk slope). The variances
+are estimated by maximising the exact diffuse Gaussian likelihood from an
+exact-diffuse Kalman filter, and the fit also returns AIC/BIC, one-step
+innovations, standardized residuals, and the RTS-smoothed level.
+`structural_prediction_interval` propagates the state covariance forward
+for exact Gaussian intervals. Estimates, forecasts, standard errors, and
+smoothed states agree with statsmodels' `UnobservedComponents` at the same
+parameters. Pass `variances=(s2_obs, s2_level[, s2_slope])` to skip
+estimation.
+
+```python
+from ts_forecast.models import fit_structural_model, structural_prediction_interval
+
+fit = fit_structural_model(train, "value", trend=True)
+print(fit["variances"], fit["signal_to_noise"], fit["aic"])
+band = structural_prediction_interval(train, "value", 14, trend=True, coverage=0.9)
+band["forecast"], band["lower"], band["upper"]
+```
+
+```bash
+python -m ts_forecast.cli data.csv --target value --model local_linear_trend \
+  --steps 14 --interval-coverage 0.9
+```

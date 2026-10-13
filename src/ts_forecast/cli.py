@@ -14,6 +14,7 @@ from ts_forecast.models import (
     fourier_regression_forecast,
     sarima_forecast,
     seasonal_naive_drift_forecast,
+    structural_prediction_interval,
 )
 from ts_forecast.preprocessing import load_csv, train_test_split
 
@@ -68,6 +69,8 @@ def build_parser():
             "tsb",
             "adida",
             "imapa",
+            "local_level",
+            "local_linear_trend",
         ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
@@ -76,7 +79,9 @@ def build_parser():
         "Teunter-Syntetos-Babai probability smoother for intermittent demand; "
         "adida aggregates into buckets, forecasts the totals, and spreads "
         "them back over the periods; imapa averages ADIDA over every "
-        "aggregation level from 1 to the mean inter-demand interval.",
+        "aggregation level from 1 to the mean inter-demand interval; "
+        "local_level and local_linear_trend are Kalman-filter structural "
+        "models with MLE variances and exact Gaussian intervals.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -176,6 +181,12 @@ def build_parser():
         help="How IMAPA combines the per-level forecasts",
     )
     parser.add_argument(
+        "--interval-coverage",
+        type=float,
+        default=0.9,
+        help="Prediction-interval coverage for the structural models",
+    )
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -220,10 +231,11 @@ def run_cli(args):
         forecast = fourier_regression_forecast(
             train,
             args.target,
-            steps=args.steps,
+            steps=steps,
             seasonal_period=args.seasonal_period or 7,
             n_harmonics=getattr(args, "n_harmonics", 3) or 3,
         )
+        title = "Fourier regression forecast metrics"
     elif args.model == "holt_winters":
         forecast = holt_winters_forecast(
             train,
@@ -283,6 +295,24 @@ def run_cli(args):
             combine=args.imapa_combine,
         )
         title = "IMAPA intermittent-demand forecast metrics"
+    elif args.model in {"local_level", "local_linear_trend"}:
+        trend = args.model == "local_linear_trend"
+        interval = structural_prediction_interval(
+            train,
+            args.target,
+            steps,
+            trend=trend,
+            coverage=args.interval_coverage,
+        )
+        metrics = compute_metrics(actual, interval["forecast"])
+        name = "Local linear trend" if trend else "Local level"
+        _print_metrics(f"{name} (Kalman MLE) forecast metrics", metrics)
+        inside = (actual >= interval["lower"]) & (actual <= interval["upper"])
+        print(
+            f"  {args.interval_coverage:.0%} interval coverage: "
+            f"{inside.mean():.2%} over {inside.size} steps"
+        )
+        return {**interval, "metrics": metrics, "coverage": float(inside.mean())}
     else:
         forecast = seasonal_naive_drift_forecast(
             train,
