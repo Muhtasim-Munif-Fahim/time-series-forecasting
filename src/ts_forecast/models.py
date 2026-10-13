@@ -1904,3 +1904,341 @@ def fourier_regression_forecast(
     if fitted["include_trend"]:
         design = np.column_stack([design, horizon])
     return design @ fitted["coefficients"]
+
+
+def _structural_system(trend):
+    if trend:
+        transition = np.array([[1.0, 1.0], [0.0, 1.0]])
+        design = np.array([1.0, 0.0])
+    else:
+        transition = np.array([[1.0]])
+        design = np.array([1.0])
+    return transition, design
+
+
+def _structural_values(train, target_col, trend):
+    if target_col not in train:
+        raise KeyError(f"unknown target column: {target_col}")
+    values = np.asarray(train[target_col].dropna(), dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("training data must contain only finite values")
+    minimum = 4 if trend else 3
+    if values.size < minimum:
+        raise ValueError(
+            f"training data must contain at least {minimum} observations"
+        )
+    return values
+
+
+def _structural_exact_start(values, variances, trend):
+    """Exact diffuse initialisation after the first ``d`` observations.
+
+    With a diffuse prior the state is exactly identified by the first ``d``
+    observations: ``level_1 = y_1`` (local level) or ``level_2 = y_2``,
+    ``slope_2 = y_2 - y_1`` (local linear trend), with filtered covariance
+    ``H`` and ``[[H, H], [H, 2H + q_level + q_slope]]`` respectively.
+    """
+    obs_var = float(variances[0])
+    if trend:
+        state = np.array([values[1], values[1] - values[0]])
+        cov = np.array(
+            [
+                [obs_var, obs_var],
+                [obs_var, 2.0 * obs_var + float(variances[1]) + float(variances[2])],
+            ]
+        )
+    else:
+        state = np.array([values[0]])
+        cov = np.array([[obs_var]])
+    return state, cov
+
+
+def _structural_kalman(values, variances, trend):
+    """Exact-diffuse Kalman filter for the local level / linear trend model.
+
+    The first ``d`` (state dimension) observations identify the state, so
+    their one-step predictions and innovations are ``nan`` and they are
+    excluded from the diffuse log-likelihood.
+    """
+    transition, design = _structural_system(trend)
+    dim = transition.shape[0]
+    obs_var = float(variances[0])
+    state_cov = np.diag(np.asarray(variances[1:], dtype=float))
+    n = values.size
+    predictions = np.full(n, np.nan)
+    innovations = np.full(n, np.nan)
+    innovation_vars = np.full(n, np.nan)
+    filtered = np.full((n, dim), np.nan)
+    filtered_cov = np.full((n, dim, dim), np.nan)
+
+    state, cov = _structural_exact_start(values, variances, trend)
+    filtered[dim - 1] = state
+    filtered_cov[dim - 1] = cov
+    loglik = 0.0
+    for t in range(dim, n):
+        state = transition @ state
+        cov = transition @ cov @ transition.T + state_cov
+        pred = float(design @ state)
+        pz = cov @ design
+        f = float(design @ pz) + obs_var
+        if f <= 0.0:
+            f = 1e-300
+        v = values[t] - pred
+        gain = pz / f
+        state = state + gain * v
+        cov = cov - np.outer(gain, pz)
+        cov = 0.5 * (cov + cov.T)
+        predictions[t] = pred
+        innovations[t] = v
+        innovation_vars[t] = f
+        filtered[t] = state
+        filtered_cov[t] = cov
+        loglik -= 0.5 * (np.log(2.0 * np.pi) + np.log(f) + v * v / f)
+    return {
+        "loglik": float(loglik),
+        "predictions": predictions,
+        "innovations": innovations,
+        "innovation_vars": innovation_vars,
+        "filtered": filtered,
+        "filtered_cov": filtered_cov,
+        "state_cov": state_cov,
+        "obs_var": obs_var,
+        "first_value": float(values[0]),
+        "next_state": transition @ state,
+        "next_cov": transition @ cov @ transition.T + state_cov,
+    }
+
+
+def _structural_loglik(values, variances, trend):
+    """Scalar-arithmetic diffuse log-likelihood used inside the optimiser."""
+    h = float(variances[0])
+    q1 = float(variances[1])
+    total = 0.0
+    log2pi = np.log(2.0 * np.pi)
+    if not trend:
+        a = float(values[0])
+        p = h
+        for y in values[1:].tolist():
+            p += q1
+            f = p + h
+            if f <= 0.0:
+                f = 1e-300
+            v = y - a
+            total += log2pi + np.log(f) + v * v / f
+            k = p / f
+            a += k * v
+            p -= k * p
+        return -0.5 * total
+    q2 = float(variances[2])
+    a0 = float(values[1])
+    a1 = float(values[1] - values[0])
+    p00, p01, p11 = h, h, 2.0 * h + q1 + q2
+    for y in values[2:].tolist():
+        a0 = a0 + a1
+        p00, p01, p11 = p00 + 2.0 * p01 + p11 + q1, p01 + p11, p11 + q2
+        f = p00 + h
+        if f <= 0.0:
+            f = 1e-300
+        v = y - a0
+        total += log2pi + np.log(f) + v * v / f
+        k0 = p00 / f
+        k1 = p01 / f
+        a0 += k0 * v
+        a1 += k1 * v
+        p00, p01, p11 = p00 - k0 * p00, p01 - k0 * p01, p11 - k1 * p01
+    return -0.5 * total
+
+
+def _structural_smoother(kalman, trend):
+    """Rauch-Tung-Striebel fixed-interval smoother of the filtered states.
+
+    For the local linear trend the filtered state at ``t = 0`` is the first
+    observation with a (numerically) diffuse slope.
+    """
+    transition, _ = _structural_system(trend)
+    filtered = kalman["filtered"].copy()
+    filtered_cov = kalman["filtered_cov"]
+    state_cov = kalman["state_cov"]
+    n = filtered.shape[0]
+    smoothed = filtered.copy()
+    filtered_cov = filtered_cov.copy()
+    if trend:
+        # Level at t = 0 is pinned by y_0; the slope is still diffuse.
+        obs_var = float(kalman["obs_var"])
+        diffuse = 1e8 * max(float(np.nanmax(np.abs(filtered_cov[1]))), 1.0)
+        smoothed[0] = [kalman["first_value"], 0.0]
+        filtered[0] = smoothed[0]
+        filtered_cov[0] = np.diag([obs_var, diffuse])
+    for t in range(n - 2, -1, -1):
+        predicted = transition @ filtered[t]
+        predicted_cov = transition @ filtered_cov[t] @ transition.T + state_cov
+        gain = filtered_cov[t] @ transition.T @ np.linalg.pinv(predicted_cov)
+        smoothed[t] = filtered[t] + gain @ (smoothed[t + 1] - predicted)
+    return smoothed
+
+
+def fit_structural_model(train, target_col, *, trend=False, variances=None):
+    """Fit a Gaussian structural time-series model by Kalman-filter MLE.
+
+    ``trend=False`` fits the local level model (Harvey, 1989; Durbin &
+    Koopman, 2012)::
+
+        y_t = mu_t + eps_t,        eps_t ~ N(0, s2_obs)
+        mu_{t+1} = mu_t + eta_t,   eta_t ~ N(0, s2_level)
+
+    ``trend=True`` adds a stochastic slope (local linear trend)::
+
+        mu_{t+1} = mu_t + nu_t + eta_t
+        nu_{t+1} = nu_t + zeta_t,  zeta_t ~ N(0, s2_slope)
+
+    Variances are estimated by maximising the diffuse Gaussian
+    log-likelihood over their logarithms (L-BFGS-B, several starts) unless
+    ``variances`` is given as ``(s2_obs, s2_level[, s2_slope])``. The local
+    level model is the state-space form of simple exponential smoothing with
+    ``alpha`` determined by the signal-to-noise ratio, and its forecasts
+    carry exact Gaussian prediction intervals.
+
+    Returns a dict with the variances, final filtered level (and slope),
+    final state covariance, log-likelihood, AIC/BIC, one-step-ahead
+    predictions and innovations (``nan`` for the first ``d`` observations,
+    which identify the diffuse initial state), standardized residuals,
+    smoothed level, and the internal one-step-ahead state used for
+    forecasting.
+    """
+    from scipy.optimize import minimize
+
+    values = _structural_values(train, target_col, trend)
+    n_var = 3 if trend else 2
+    if variances is not None:
+        params = np.asarray(variances, dtype=float).ravel()
+        if params.size != n_var:
+            raise ValueError(
+                f"variances must contain {n_var} entries for trend={bool(trend)}"
+            )
+        if not np.all(np.isfinite(params)) or np.any(params < 0):
+            raise ValueError("variances must be finite and non-negative")
+        if params[0] == 0 and np.all(params[1:] == 0):
+            raise ValueError("at least one variance must be positive")
+        estimated = False
+    else:
+        base = float(np.var(np.diff(values))) if values.size > 1 else 1.0
+        if not base > 0:
+            base = max(float(np.var(values)), 1.0)
+        floor = np.log(base * 1e-10)
+
+        def negloglik(log_params):
+            return -_structural_loglik(values, np.exp(log_params), trend)
+
+        starts = []
+        for ratio in (1.0, 0.1, 10.0, 0.01):
+            start = [np.log(base / (1.0 + ratio)), np.log(base * ratio / (1.0 + ratio))]
+            if trend:
+                start.append(np.log(base * 1e-3))
+            starts.append(np.asarray(start))
+        bounds = [(floor, np.log(base * 1e4))] * n_var
+        best = None
+        for start in starts:
+            result = minimize(
+                negloglik,
+                start,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={"ftol": 1e-13, "gtol": 1e-9, "maxiter": 2000},
+            )
+            if best is None or result.fun < best.fun:
+                best = result
+        params = np.exp(best.x)
+        params[params <= base * 1e-9] = 0.0
+        if params[0] == 0 and np.all(params[1:] == 0):
+            params[0] = base * 1e-10
+        estimated = True
+
+    kalman = _structural_kalman(values, params, trend)
+    smoothed = _structural_smoother(kalman, trend)
+    dim = 2 if trend else 1
+    n_eff = values.size - dim
+    k = n_var if estimated else 0
+    loglik = kalman["loglik"]
+    std_resid = kalman["innovations"][dim:] / np.sqrt(kalman["innovation_vars"][dim:])
+    named = {"observation": float(params[0]), "level": float(params[1])}
+    if trend:
+        named["slope"] = float(params[2])
+    final = kalman["filtered"][-1]
+    return {
+        "trend": bool(trend),
+        "variances": named,
+        "signal_to_noise": (
+            float(params[1] / params[0]) if params[0] > 0 else float("inf")
+        ),
+        "level": float(final[0]),
+        "slope": float(final[1]) if trend else 0.0,
+        "state_cov": kalman["filtered_cov"][-1],
+        "loglik": loglik,
+        "aic": float(-2.0 * loglik + 2.0 * k),
+        "bic": float(-2.0 * loglik + np.log(max(n_eff, 1)) * k),
+        "n_obs": int(values.size),
+        "estimated": estimated,
+        "fitted": kalman["predictions"],
+        "residuals": kalman["innovations"],
+        "standardized_residuals": std_resid,
+        "smoothed_level": smoothed[:, 0],
+        "_next_state": kalman["next_state"],
+        "_next_cov": kalman["next_cov"],
+    }
+
+
+def _structural_paths(fitted, steps):
+    trend = fitted["trend"]
+    transition, design = _structural_system(trend)
+    v = fitted["variances"]
+    state_cov = np.diag([v["level"], v["slope"]] if trend else [v["level"]])
+    state = np.asarray(fitted["_next_state"], dtype=float)
+    cov = np.asarray(fitted["_next_cov"], dtype=float)
+    means = np.empty(steps)
+    variances = np.empty(steps)
+    for h in range(steps):
+        means[h] = float(design @ state)
+        variances[h] = float(design @ cov @ design) + v["observation"]
+        state = transition @ state
+        cov = transition @ cov @ transition.T + state_cov
+    return means, variances
+
+
+def structural_forecast(train, target_col, steps=1, trend=False, variances=None):
+    """Point forecasts from a local level / local linear trend model.
+
+    Fits :func:`fit_structural_model` and projects the filtered state
+    forward: a flat line at the final level, or ``level + h * slope`` when
+    ``trend=True``.
+    """
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    fitted = fit_structural_model(train, target_col, trend=trend, variances=variances)
+    return _structural_paths(fitted, steps)[0]
+
+
+def structural_prediction_interval(
+    train, target_col, steps, trend=False, coverage=0.9, variances=None
+):
+    """Exact Gaussian prediction intervals from a structural model.
+
+    The ``h``-step forecast variance is ``Z P_{n+h} Z' + s2_obs`` where
+    ``P`` is propagated through the state transition, so the intervals widen
+    like ``sqrt(h)`` for the local level and faster (cubic in ``h``) once a
+    stochastic slope is present. Returns ``forecast``, ``lower``, ``upper``,
+    and ``std`` arrays.
+    """
+    if steps < 1:
+        raise ValueError("steps must be at least 1")
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    fitted = fit_structural_model(train, target_col, trend=trend, variances=variances)
+    means, var = _structural_paths(fitted, steps)
+    std = np.sqrt(np.maximum(var, 0.0))
+    critical = float(norm.ppf(0.5 + coverage / 2.0))
+    return {
+        "forecast": means,
+        "lower": means - critical * std,
+        "upper": means + critical * std,
+        "std": std,
+    }
