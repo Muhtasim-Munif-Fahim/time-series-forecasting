@@ -2,6 +2,7 @@
 
 import argparse
 
+from ts_forecast.diagnostics import detect_seasonal_periods
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
     adida_forecast,
@@ -187,6 +188,17 @@ def build_parser():
         help="Prediction-interval coverage for the structural models",
     )
     parser.add_argument(
+        "--detect-seasonality",
+        action="store_true",
+        help="Print periodogram cycles that pass Fisher's g test on the training split and exit",
+    )
+    parser.add_argument(
+        "--seasonality-alpha",
+        type=float,
+        default=0.05,
+        help="Significance level for --detect-seasonality",
+    )
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -200,6 +212,20 @@ def run_cli(args):
     steps = min(int(args.steps), len(test))
     actual = test[args.target].values[:steps]
     weights = None if args.ensemble_weights == "equal" else args.ensemble_weights
+
+    if args.detect_seasonality:
+        report = detect_seasonal_periods(train[args.target].values, alpha=args.seasonality_alpha)
+        print("Periodogram seasonality detection (Fisher's g test)")
+        if not report["periods"]:
+            last = report["last_test"]
+            print(f"  no significant cycle (strongest p-value {last['p_value']:.4g})")
+        for item in report["periods"]:
+            print(
+                f"  period {item['period']:.2f} (~{item['rounded_period']}): "
+                f"g={item['g']:.4f}  p-value={item['p_value']:.3g}"
+            )
+        print(f"  suggested --seasonal-period: {report['primary_period']}")
+        return report
 
     if args.classify_demand:
         report = classify_demand(train, args.target)
