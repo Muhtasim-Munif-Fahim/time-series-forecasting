@@ -337,3 +337,184 @@ def detect_changepoints(values, threshold=1.36, min_segment=8, max_breaks=5):
         "threshold": float(threshold),
         "min_segment": int(min_segment),
     }
+
+
+_DETRENDS = ("linear", "constant", None)
+
+
+def _detrended(values, detrend):
+    observed = np.asarray(values, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if detrend not in _DETRENDS:
+        raise ValueError("detrend must be 'linear', 'constant', or None")
+    if detrend == "constant":
+        return observed - observed.mean()
+    if detrend == "linear":
+        t = np.arange(observed.size, dtype=float)
+        slope, intercept = np.polyfit(t, observed, 1)
+        return observed - (intercept + slope * t)
+    return observed
+
+
+def periodogram(values, detrend="linear"):
+    """Raw periodogram at the interior Fourier frequencies.
+
+    Returns the ordinates ``I(f_j) = |sum_t x_t exp(-2 pi i f_j t)|^2 / n``
+    at ``f_j = j / n`` for ``j = 1 .. floor((n - 1) / 2)`` (cycles per
+    observation), i.e. excluding the zero frequency and, for even ``n``, the
+    Nyquist frequency, whose ordinates are not exponentially distributed
+    under white noise. ``detrend`` removes a least-squares line
+    (``"linear"``, the default, so a trend does not leak into the lowest
+    frequencies), the mean (``"constant"``), or nothing (``None``).
+    Periods are reported in observations (``1 / f_j``).
+    """
+
+    x = _detrended(values, detrend)
+    n = x.size
+    if n < 8:
+        raise ValueError("at least eight observations are required for a periodogram")
+    m = (n - 1) // 2
+    spectrum = np.fft.rfft(x)
+    power = np.abs(spectrum[1 : m + 1]) ** 2 / n
+    j = np.arange(1, m + 1)
+    frequencies = j / n
+    return {
+        "frequencies": frequencies,
+        "periods": n / j,
+        "power": power,
+        "n": int(n),
+        "detrend": detrend,
+    }
+
+
+def _fisher_g_pvalue(g, m):
+    """Exact ``P(G >= g)`` for Fisher's g with ``m`` ordinates (Fisher 1929).
+
+    ``P = sum_{k=1}^{floor(1/g)} (-1)^(k-1) C(m, k) (1 - k g)^(m-1)``. The
+    alternating sum is evaluated in high-precision decimal arithmetic so it
+    stays accurate when many terms cancel.
+    """
+
+    from decimal import Decimal, localcontext
+    from math import comb, floor
+
+    if m < 2:
+        return 1.0
+    if g <= 1.0 / m:
+        return 1.0
+    upper = min(m, floor(1.0 / g))
+    with localcontext() as ctx:
+        ctx.prec = 60 + int(0.31 * m)
+        gd = Decimal(repr(float(g)))
+        total = Decimal(0)
+        for k in range(1, upper + 1):
+            base = 1 - k * gd
+            if base <= 0:
+                break
+            term = Decimal(comb(m, k)) * base ** (m - 1)
+            total += term if k % 2 == 1 else -term
+        return float(min(max(total, Decimal(0)), Decimal(1)))
+
+
+def fisher_g_test(values, detrend="linear", alpha=0.05, max_period=None, exclude=()):
+    """Fisher's exact g test for a hidden periodicity.
+
+    ``g = max_j I(f_j) / sum_j I(f_j)`` over the periodogram ordinates from
+    :func:`periodogram`. Under Gaussian white noise the ordinates are i.i.d.
+    exponential and ``g`` has Fisher's exact null distribution, so a small
+    p-value means one frequency carries far more variance than chance would
+    allow. ``max_period`` drops ordinates whose period exceeds it before
+    testing (fix it in advance, e.g. to ignore slow drift), and ``exclude``
+    lists ordinate indices (positions in the periodogram arrays) to leave out,
+    which :func:`detect_seasonal_periods` uses to test successive peaks.
+    """
+
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    spec = periodogram(values, detrend=detrend)
+    keep = np.ones(spec["power"].size, dtype=bool)
+    if max_period is not None:
+        if max_period < 2:
+            raise ValueError("max_period must be at least 2")
+        keep &= spec["periods"] <= max_period
+    for index in exclude:
+        keep[int(index)] = False
+    candidates = np.flatnonzero(keep)
+    if candidates.size < 2:
+        raise ValueError("fewer than two periodogram ordinates remain to test")
+    power = spec["power"][candidates]
+    total = power.sum()
+    scale = max(float(np.max(np.abs(np.asarray(values, dtype=float)))), 1.0)
+    if total <= spec["n"] * (1e-10 * scale) ** 2:
+        raise ValueError("series has no variance after detrending")
+    best = int(np.argmax(power))
+    g = float(power[best] / total)
+    p_value = _fisher_g_pvalue(g, candidates.size)
+    index = int(candidates[best])
+    return {
+        "g": g,
+        "p_value": p_value,
+        "significant": bool(p_value < alpha),
+        "alpha": float(alpha),
+        "n_ordinates": int(candidates.size),
+        "index": index,
+        "frequency": float(spec["frequencies"][index]),
+        "period": float(spec["periods"][index]),
+        "power": float(spec["power"][index]),
+    }
+
+
+def detect_seasonal_periods(
+    values, max_periods=3, alpha=0.05, detrend="linear", max_period=None, leakage_bins=1
+):
+    """Find significant cycles with repeated Fisher g tests on the periodogram.
+
+    The strongest ordinate is tested with :func:`fisher_g_test`; if
+    significant it is recorded and removed together with ``leakage_bins``
+    neighbours on each side (a cycle whose period is not an exact Fourier
+    period leaks power into adjacent ordinates), and the next strongest is
+    tested against the remaining ordinates, until a test fails or ``max_periods``
+    cycles are found. A significant peak that rounds to an already detected
+    period is treated as further leakage of that cycle: it is removed but not
+    reported again. Each detection reports the Fourier period ``n / j``
+    and ``rounded_period`` (the nearest integer, handy as a
+    ``seasonal_period`` for Holt-Winters/SARIMA/seasonal naive). Harmonics
+    of a non-sinusoidal season (``period / 2``, ``period / 3``, ...) can be
+    detected as separate cycles; ``primary_period`` is the rounded period of
+    the strongest detection, or ``None`` when nothing is significant.
+    """
+
+    if not isinstance(max_periods, (int, np.integer)) or max_periods < 1:
+        raise ValueError("max_periods must be a positive integer")
+    if not isinstance(leakage_bins, (int, np.integer)) or leakage_bins < 0:
+        raise ValueError("leakage_bins must be a non-negative integer")
+    n_ordinates = (np.asarray(values).size - 1) // 2
+    detections = []
+    excluded = []
+    last = None
+    while len(detections) < max_periods:
+        try:
+            result = fisher_g_test(
+                values, detrend=detrend, alpha=alpha, max_period=max_period, exclude=excluded
+            )
+        except ValueError:
+            if not detections and last is None:
+                raise
+            break
+        last = result
+        if not result["significant"]:
+            break
+        result["rounded_period"] = int(round(result["period"]))
+        if result["rounded_period"] not in {d["rounded_period"] for d in detections}:
+            detections.append(result)
+        centre = result["index"]
+        for index in range(centre - leakage_bins, centre + leakage_bins + 1):
+            if 0 <= index < n_ordinates and index not in excluded:
+                excluded.append(index)
+    return {
+        "periods": detections,
+        "primary_period": detections[0]["rounded_period"] if detections else None,
+        "alpha": float(alpha),
+        "last_test": last,
+    }

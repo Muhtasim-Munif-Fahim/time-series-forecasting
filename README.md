@@ -110,10 +110,38 @@ python -m ts_forecast.cli data.csv --target value --model tsb --tsb-alpha 0.1
 python -m ts_forecast.cli data.csv --target value --model adida --adida-base ses
 python -m ts_forecast.cli data.csv --target value --model imapa --imapa-base auto
 python -m ts_forecast.cli data.csv --target value --classify-demand
+python -m ts_forecast.cli data.csv --target value --detect-seasonality
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
 constant. `--croston-method sba` selects the Syntetos-Boylan correction.
+
+## Seasonality detection (periodogram + Fisher's g test)
+
+Before picking `--seasonal-period`, ask the data which cycles are real:
+
+```python
+from ts_forecast.diagnostics import periodogram, fisher_g_test, detect_seasonal_periods
+
+spec = periodogram(values)                 # Fourier frequencies j/n, periods n/j, power
+test = fisher_g_test(values)               # g = max ordinate / sum, exact p-value
+report = detect_seasonal_periods(values)   # repeated g tests, strongest first
+report["primary_period"]                   # e.g. 7, or None if nothing is significant
+```
+
+- `periodogram` returns `|DFT|^2 / n` at the interior Fourier frequencies
+  (zero and Nyquist excluded), after removing a least-squares line by default
+  (`detrend="linear" | "constant" | None`).
+- `fisher_g_test` uses Fisher's (1929) exact null distribution
+  `P(g >= x) = sum_k (-1)^(k-1) C(m, k) (1 - k x)^(m-1)`, evaluated in
+  high-precision decimals so the alternating sum stays accurate for long
+  series. Under Gaussian white noise the p-values are uniform. `max_period`
+  drops slower ordinates before testing.
+- `detect_seasonal_periods` removes each significant peak (plus
+  `leakage_bins` neighbours, since off-grid cycles leak into adjacent bins)
+  and tests the next one, up to `max_periods`. Peaks that round to a period
+  already found are treated as leakage and not reported twice. Harmonics of a
+  non-sinusoidal season can still appear as their own cycles.
 
 ## Demand classification (SBC) and IMAPA
 
