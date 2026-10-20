@@ -518,3 +518,223 @@ def detect_seasonal_periods(
         "alpha": float(alpha),
         "last_test": last,
     }
+
+
+def _sidak(p_value, m):
+    """Sidak-adjusted family-wise p-value ``1 - (1 - p)^m``."""
+
+    return float(min(1.0, max(0.0, -np.expm1(m * np.log1p(-min(p_value, 1.0 - 1e-300))))))
+
+
+def variance_ratio_test(values, periods=(2, 4, 8, 16), increments=False, alpha=0.05):
+    """Lo-MacKinlay (1988) variance ratio test of the random-walk hypothesis.
+
+    ``values`` are levels ``X_0 .. X_T`` (e.g. log prices or a cumulative
+    series) unless ``increments=True``, in which case they are the
+    differences ``x_t = X_t - X_{t-1}`` themselves. Under a random walk the
+    variance of ``q``-period increments grows linearly in ``q``, so
+
+    ``VR(q) = sigma_c^2(q) / sigma_a^2``
+
+    is close to one; ``VR(q) > 1`` points to positively autocorrelated
+    increments (momentum, a trending component) and ``VR(q) < 1`` to mean
+    reversion. Both variances use Lo and MacKinlay's bias-corrected
+    estimators with overlapping ``q``-period increments:
+    ``sigma_a^2 = sum (x_t - mu)^2 / (T - 1)`` and
+    ``sigma_c^2(q) = sum_{t=q}^{T} (X_t - X_{t-q} - q mu)^2 / m`` with
+    ``m = q (T - q + 1) (1 - q / T)``.
+
+    Each period reports the homoskedastic statistic
+    ``z(q) = (VR(q) - 1) / sqrt(2 (2q - 1)(q - 1) / (3 q T))`` and the
+    heteroskedasticity-consistent ``z*(q) = (VR(q) - 1) / sqrt(theta(q) / T)``
+    with ``theta(q) = sum_{j=1}^{q-1} (2 (q - j) / q)^2 delta_j`` and
+    ``delta_j = T sum_t dev_t^2 dev_{t-j}^2 / (sum_t dev_t^2)^2``, so a random walk
+    with volatility clustering is not rejected spuriously. Two-sided normal
+    p-values are given for both. The joint Chow-Denning (1993) test takes
+    ``max_q |z*(q)|`` and bounds its family-wise p-value with the Sidak
+    inequality (the studentized maximum modulus bound), which is
+    conservative because the ``z*(q)`` are positively correlated.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1")
+    if isinstance(periods, (int, np.integer)):
+        periods = (periods,)
+    periods = tuple(periods)
+    if not periods:
+        raise ValueError("periods must not be empty")
+    for q in periods:
+        if isinstance(q, bool) or not isinstance(q, (int, np.integer)) or q < 2:
+            raise ValueError("each period must be an integer of at least 2")
+    if len(set(periods)) != len(periods):
+        raise ValueError("periods must be distinct")
+
+    if increments:
+        x = observed
+        levels = np.concatenate(([0.0], np.cumsum(x)))
+    else:
+        levels = observed
+        x = np.diff(levels)
+    T = x.size
+    if T < 2 * max(periods):
+        raise ValueError("need at least 2 * max(periods) increments")
+    mu = (levels[-1] - levels[0]) / T
+    dev = x - mu
+    ss = float(np.sum(dev**2))
+    scale = max(float(np.max(np.abs(x))), 1.0)
+    if ss <= T * (1e-12 * scale) ** 2:
+        raise ValueError("increments have no variance")
+    sigma_a = ss / (T - 1)
+    dev2 = dev**2
+
+    rows = []
+    for q in periods:
+        q = int(q)
+        long = levels[q:] - levels[:-q] - q * mu
+        m = q * (T - q + 1) * (1.0 - q / T)
+        sigma_c = float(np.sum(long**2)) / m
+        vr = sigma_c / sigma_a
+        phi = 2.0 * (2 * q - 1) * (q - 1) / (3.0 * q * T)
+        z = (vr - 1.0) / np.sqrt(phi)
+        theta = 0.0
+        for j in range(1, q):
+            delta = T * float(np.sum(dev2[j:] * dev2[:-j])) / ss**2
+            theta += (2.0 * (q - j) / q) ** 2 * delta
+        theta /= T
+        z_robust = (vr - 1.0) / np.sqrt(theta) if theta > 0 else float("nan")
+        p = float(2.0 * norm.sf(abs(z)))
+        p_robust = float(2.0 * norm.sf(abs(z_robust))) if np.isfinite(z_robust) else float("nan")
+        rows.append(
+            {
+                "period": q,
+                "variance_ratio": float(vr),
+                "z": float(z),
+                "p_value": p,
+                "z_robust": float(z_robust),
+                "p_value_robust": p_robust,
+                "asymptotic_variance": float(phi),
+                "robust_variance": float(theta),
+            }
+        )
+
+    finite = [r for r in rows if np.isfinite(r["z_robust"])]
+    if finite:
+        worst = max(finite, key=lambda r: abs(r["z_robust"]))
+        joint_stat = abs(worst["z_robust"])
+        joint_p = _sidak(worst["p_value_robust"], len(finite))
+        joint_period = worst["period"]
+    else:
+        joint_stat, joint_p, joint_period = float("nan"), float("nan"), None
+    return {
+        "periods": rows,
+        "n_increments": int(T),
+        "drift": float(mu),
+        "increment_variance": float(sigma_a),
+        "chow_denning": {
+            "statistic": float(joint_stat),
+            "p_value": float(joint_p),
+            "period": joint_period,
+        },
+        "reject_random_walk": bool(np.isfinite(joint_p) and joint_p < alpha),
+        "alpha": float(alpha),
+    }
+
+
+def detrended_fluctuation_analysis(values, scales=None, order=1, min_scale=None):
+    """Detrended fluctuation analysis (Peng et al. 1994) scaling exponent.
+
+    The series is integrated into the profile ``Y_k = sum_{t<=k} (x_t - mean)``,
+    which is split into non-overlapping windows of ``s`` observations,
+    taken both from the start and from the end so no data are dropped
+    (``2 floor(n / s)`` windows). A least-squares polynomial of degree
+    ``order`` is removed from each window (DFA-1 removes lines, DFA-2
+    parabolas, ...). ``F(s)`` is the root-mean-square residual over all
+    windows, and ``alpha`` is the slope of ``log F(s)`` against ``log s``.
+
+    For a stationary series ``alpha`` estimates the Hurst exponent: about
+    0.5 for white noise or short memory at large scales, above 0.5 for
+    persistent long-range correlation, below 0.5 for anti-persistence. A
+    random walk gives about 1.5 (``alpha - 1`` is then the Hurst exponent
+    of its increments). DFA-``k`` is blind to polynomial trends of degree
+    ``k - 1`` in the series, which is its advantage over rescaled-range
+    estimates. ``scales`` defaults to about 20 log-spaced integers from
+    ``min_scale`` (``order + 3`` by default, the smallest window whose fit
+    still has residual degrees of freedom left over) to ``n / 4``.
+    """
+
+    observed = np.asarray(values, dtype=float).ravel()
+    if not np.all(np.isfinite(observed)):
+        raise ValueError("values must contain only finite numbers")
+    if isinstance(order, bool) or not isinstance(order, (int, np.integer)) or order < 1:
+        raise ValueError("order must be a positive integer")
+    n = observed.size
+    if min_scale is None:
+        min_scale = order + 3
+    if min_scale < order + 2:
+        raise ValueError("min_scale must exceed order + 1")
+    if scales is None:
+        upper = n // 4
+        if upper < min_scale + 1:
+            raise ValueError("series is too short for DFA at this order")
+        scales = np.unique(
+            np.round(np.geomspace(min_scale, upper, num=20)).astype(int)
+        )
+    else:
+        scales = np.unique(np.asarray(scales, dtype=int))
+        if scales.size == 0:
+            raise ValueError("scales must not be empty")
+        if scales[0] < order + 2:
+            raise ValueError("every scale must exceed order + 1")
+        if scales[-1] > n // 2:
+            raise ValueError("scales must not exceed half the series length")
+    if scales.size < 2:
+        raise ValueError("at least two distinct scales are required")
+
+    profile = np.cumsum(observed - observed.mean())
+    fluctuations = np.empty(scales.size)
+    for i, s in enumerate(scales):
+        s = int(s)
+        k = n // s
+        t = np.arange(s, dtype=float)
+        design = np.vander(t, order + 1)
+        projector = design @ np.linalg.pinv(design)
+        segments = np.vstack(
+            (profile[: k * s].reshape(k, s), profile[n - k * s :].reshape(k, s))
+        )
+        residuals = segments - segments @ projector.T
+        fluctuations[i] = np.sqrt(np.mean(residuals**2))
+
+    scale_ref = max(float(np.max(np.abs(profile))), 1.0)
+    if np.any(fluctuations <= 1e-12 * scale_ref):
+        raise ValueError(
+            "profile is exactly polynomial at some scale; DFA exponent is undefined"
+        )
+    log_s = np.log(scales.astype(float))
+    log_f = np.log(fluctuations)
+    slope, intercept = np.polyfit(log_s, log_f, 1)
+    fitted = intercept + slope * log_s
+    ss_res = float(np.sum((log_f - fitted) ** 2))
+    ss_tot = float(np.sum((log_f - log_f.mean()) ** 2))
+    alpha = float(slope)
+    if alpha < 0.4:
+        regime = "anti-persistent"
+    elif alpha <= 0.6:
+        regime = "uncorrelated"
+    elif alpha < 1.0:
+        regime = "persistent"
+    elif alpha <= 1.2:
+        regime = "1/f noise"
+    else:
+        regime = "non-stationary (random-walk like)"
+    return {
+        "alpha": alpha,
+        "intercept": float(intercept),
+        "r_squared": float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 1.0,
+        "scales": scales,
+        "fluctuations": fluctuations,
+        "order": int(order),
+        "regime": regime,
+    }

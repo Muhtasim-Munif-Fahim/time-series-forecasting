@@ -2,7 +2,11 @@
 
 import argparse
 
-from ts_forecast.diagnostics import detect_seasonal_periods
+from ts_forecast.diagnostics import (
+    detect_seasonal_periods,
+    detrended_fluctuation_analysis,
+    variance_ratio_test,
+)
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.models import (
     adida_forecast,
@@ -199,6 +203,21 @@ def build_parser():
         help="Significance level for --detect-seasonality",
     )
     parser.add_argument(
+        "--random-walk-test",
+        action="store_true",
+        help=(
+            "Print Lo-MacKinlay variance ratios (with the Chow-Denning joint test) "
+            "and the DFA scaling exponent for the training split and exit"
+        ),
+    )
+    parser.add_argument(
+        "--vr-periods",
+        type=int,
+        nargs="+",
+        default=[2, 4, 8, 16],
+        help="Aggregation periods q for --random-walk-test",
+    )
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -226,6 +245,33 @@ def run_cli(args):
             )
         print(f"  suggested --seasonal-period: {report['primary_period']}")
         return report
+
+    if args.random_walk_test:
+        values = train[args.target].values
+        vr = variance_ratio_test(values, periods=tuple(args.vr_periods))
+        print("Lo-MacKinlay variance ratio test (H0: random walk)")
+        for row in vr["periods"]:
+            print(
+                f"  q={row['period']}: VR={row['variance_ratio']:.4f}  "
+                f"z={row['z']:.3f}  z*={row['z_robust']:.3f}  p*={row['p_value_robust']:.3g}"
+            )
+        joint = vr["chow_denning"]
+        verdict = "reject" if vr["reject_random_walk"] else "do not reject"
+        print(
+            f"  Chow-Denning max|z*|={joint['statistic']:.3f} (q={joint['period']})  "
+            f"p={joint['p_value']:.3g}: {verdict} random walk"
+        )
+        try:
+            dfa = detrended_fluctuation_analysis(values)
+        except ValueError as exc:
+            print(f"DFA-1 exponent: n/a ({exc})")
+            dfa = None
+        else:
+            print(
+                f"DFA-1 exponent alpha={dfa['alpha']:.3f} "
+                f"(R^2 {dfa['r_squared']:.3f}): {dfa['regime']}"
+            )
+        return {"variance_ratio": vr, "dfa": dfa}
 
     if args.classify_demand:
         report = classify_demand(train, args.target)

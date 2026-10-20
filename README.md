@@ -111,6 +111,7 @@ python -m ts_forecast.cli data.csv --target value --model adida --adida-base ses
 python -m ts_forecast.cli data.csv --target value --model imapa --imapa-base auto
 python -m ts_forecast.cli data.csv --target value --classify-demand
 python -m ts_forecast.cli data.csv --target value --detect-seasonality
+python -m ts_forecast.cli data.csv --target value --random-walk-test --vr-periods 2 4 8
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
@@ -142,6 +143,37 @@ report["primary_period"]                   # e.g. 7, or None if nothing is signi
   and tests the next one, up to `max_periods`. Peaks that round to a period
   already found are treated as leakage and not reported twice. Harmonics of a
   non-sinusoidal season can still appear as their own cycles.
+
+## Random-walk and long-memory diagnostics (variance ratio, DFA)
+
+Before trusting a model over the naive forecast, check whether the series
+is distinguishable from a random walk at all:
+
+```python
+from ts_forecast.diagnostics import variance_ratio_test, detrended_fluctuation_analysis
+
+vr = variance_ratio_test(levels, periods=(2, 4, 8, 16))
+vr["periods"][0]["variance_ratio"]   # VR(2) ~ 1 + lag-1 autocorrelation of increments
+vr["chow_denning"]["p_value"]        # joint test over all q (Sidak bound)
+vr["reject_random_walk"]
+
+dfa = detrended_fluctuation_analysis(values, order=1)
+dfa["alpha"], dfa["regime"]          # ~0.5 white noise, ~1.5 random walk
+```
+
+- `variance_ratio_test` is Lo and MacKinlay's (1988) overlapping, bias-corrected
+  variance ratio `VR(q) = Var(q-period increment) / (q Var(1-period increment))`.
+  It reports the homoskedastic `z(q)` and the heteroskedasticity-robust `z*(q)`,
+  so volatility clustering alone does not reject the random walk. The joint
+  Chow-Denning test uses `max_q |z*(q)|` with a conservative Sidak p-value.
+  `VR > 1` means momentum and `VR < 1` means mean reversion. Pass
+  `increments=True` when the input is already differenced. The statistics
+  match `arch.unitroot.VarianceRatio(debiased=True, overlap=True)`.
+- `detrended_fluctuation_analysis` (Peng et al. 1994) integrates the
+  demeaned series, removes a degree-`order` polynomial from each window
+  (forward and backward windows, so no data are dropped), and fits
+  `log F(s) ~ alpha log s`. DFA-2 is immune to linear trends in the series,
+  which inflate DFA-1 and rescaled-range Hurst estimates.
 
 ## Demand classification (SBC) and IMAPA
 
