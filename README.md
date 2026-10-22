@@ -175,6 +175,36 @@ dfa["alpha"], dfa["regime"]          # ~0.5 white noise, ~1.5 random walk
   `log F(s) ~ alpha log s`. DFA-2 is immune to linear trends in the series,
   which inflate DFA-1 and rescaled-range Hurst estimates.
 
+## Nonlinear dependence and ARCH tests (BDS, ARCH-LM, McLeod-Li)
+
+Ljung-Box only detects *linear* autocorrelation. Residuals can pass it and
+still be predictable, for example through volatility clustering, threshold
+dynamics or chaos. `ts_forecast.nonlinearity` adds the standard checks:
+
+```python
+from ts_forecast.nonlinearity import bds_test, arch_lm_test, mcleod_li_test, nonlinearity_report
+
+bds = bds_test(resid, max_dim=3, distance=1.5, n_permutations=199)
+bds["dimensions"][0]["statistic"], bds["dimensions"][0]["p_value_permutation"]
+arch_lm_test(resid, lags=4)["p_value"]       # Engle (1982) LM = n R^2 ~ chi^2_q
+mcleod_li_test(resid, lags=10)["p_value"]    # Ljung-Box on squared residuals
+nonlinearity_report(resid)["verdict"]
+```
+
+- `bds_test` (Broock, Dechert, Scheinkman & LeBaron 1996) compares the
+  correlation integral `C_m(eps)` of m-histories with `C_1(eps)^m`. These are
+  equal under i.i.d. data. `W_m` is asymptotically N(0, 1), and the
+  statistics match `statsmodels.tsa.stattools.bds` to ~1e-14. The asymptotic
+  test over-rejects for a few hundred observations or fewer (Kanzler 1999),
+  so `n_permutations` adds an exact-size shuffle p-value. `reject_iid` uses
+  a Bonferroni correction across dimensions.
+- `arch_lm_test` regresses `e_t^2` on `q` of its own lags. It matches
+  `statsmodels.stats.diagnostic.het_arch` (LM and F forms).
+- `mcleod_li_test` is the Ljung-Box Q on squared, demeaned residuals.
+- On the CLI, `--nonlinearity-test` fits ARIMA(`--order`) to the training
+  split and runs all three tests on its residuals. The related options are
+  `--bds-max-dim` and `--bds-permutations`.
+
 ## Demand classification (SBC) and IMAPA
 
 `classify_demand` places a series in one of the Syntetos-Boylan-Croston
