@@ -8,6 +8,7 @@ from ts_forecast.diagnostics import (
     variance_ratio_test,
 )
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
+from ts_forecast.nonlinearity import nonlinearity_report
 from ts_forecast.models import (
     adida_forecast,
     classify_demand,
@@ -218,6 +219,26 @@ def build_parser():
         help="Aggregation periods q for --random-walk-test",
     )
     parser.add_argument(
+        "--nonlinearity-test",
+        action="store_true",
+        help=(
+            "Fit ARIMA(--order) to the training split and test its residuals for "
+            "nonlinear dependence (BDS) and ARCH effects (Engle LM, McLeod-Li), then exit"
+        ),
+    )
+    parser.add_argument(
+        "--bds-max-dim",
+        type=int,
+        default=3,
+        help="Largest BDS embedding dimension for --nonlinearity-test",
+    )
+    parser.add_argument(
+        "--bds-permutations",
+        type=int,
+        default=0,
+        help="Permutation replicates for exact-size BDS p-values (0 = asymptotic only)",
+    )
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -272,6 +293,31 @@ def run_cli(args):
                 f"(R^2 {dfa['r_squared']:.3f}): {dfa['regime']}"
             )
         return {"variance_ratio": vr, "dfa": dfa}
+
+    if args.nonlinearity_test:
+        from statsmodels.tsa.arima.model import ARIMA
+
+        order = tuple(map(int, args.order.split(",")))
+        values = train[args.target].dropna().to_numpy(dtype=float)
+        fitted = ARIMA(values, order=order).fit()
+        residuals = fitted.resid[order[1]:]  # drop the start-up residuals of the differencing
+        report = nonlinearity_report(
+            residuals,
+            max_dim=args.bds_max_dim,
+            n_permutations=args.bds_permutations,
+        )
+        print(f"Nonlinear dependence tests on ARIMA{order} residuals (n={residuals.size})")
+        for row in report["bds"]["dimensions"]:
+            extra = ""
+            if "p_value_permutation" in row:
+                extra = f"  perm p={row['p_value_permutation']:.3g}"
+            print(f"  BDS m={row['dimension']}: W={row['statistic']:.3f}  p={row['p_value']:.3g}{extra}")
+        arch = report["arch_lm"]
+        print(f"  ARCH-LM({arch['lags']}): LM={arch['lm_statistic']:.3f}  p={arch['p_value']:.3g}")
+        ml = report["mcleod_li"]
+        print(f"  McLeod-Li({len(ml['lags'])}): Q={ml['statistic']:.3f}  p={ml['p_value']:.3g}")
+        print(f"  verdict: {report['verdict']}")
+        return report
 
     if args.classify_demand:
         report = classify_demand(train, args.target)
