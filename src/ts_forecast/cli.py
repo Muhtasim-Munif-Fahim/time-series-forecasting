@@ -9,6 +9,7 @@ from ts_forecast.diagnostics import (
 )
 from ts_forecast.evaluation import compute_metrics, seasonal_naive_drift_diagnostic
 from ts_forecast.nonlinearity import nonlinearity_report
+from ts_forecast.trend import trend_report
 from ts_forecast.models import (
     adida_forecast,
     classify_demand,
@@ -239,6 +240,20 @@ def build_parser():
         help="Permutation replicates for exact-size BDS p-values (0 = asymptotic only)",
     )
     parser.add_argument(
+        "--trend-test",
+        action="store_true",
+        help=(
+            "Run Mann-Kendall, Sen's slope and Pettitt's change-point test on the "
+            "training split, then exit"
+        ),
+    )
+    parser.add_argument(
+        "--trend-period",
+        type=int,
+        default=None,
+        help="Season length for the seasonal Kendall test in --trend-test (omit for none)",
+    )
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -317,6 +332,28 @@ def run_cli(args):
         ml = report["mcleod_li"]
         print(f"  McLeod-Li({len(ml['lags'])}): Q={ml['statistic']:.3f}  p={ml['p_value']:.3g}")
         print(f"  verdict: {report['verdict']}")
+        return report
+
+    if args.trend_test:
+        values = train[args.target].dropna().to_numpy(dtype=float)
+        report = trend_report(values, period=args.trend_period)
+        mk = report["mann_kendall"]
+        sen = report["sens_slope"]
+        print(f"Trend tests (n={values.size})")
+        print(f"  Mann-Kendall: tau={mk['tau']:.4f}  p={mk['p_value']:.3g}  ({mk['trend']})")
+        print(
+            f"  Sen slope: {sen['slope']:.4g} per step  "
+            f"[{sen['ci_low']:.4g}, {sen['ci_high']:.4g}]"
+        )
+        if report["seasonal"] is not None:
+            sk = report["seasonal"]
+            print(
+                f"  Seasonal Kendall (period {sk['period']}): z={sk['z']:.3f}  "
+                f"p={sk['p_value']:.3g}  slope/step={sk['slope_per_step']:.4g}  ({sk['trend']})"
+            )
+        pt = report["pettitt"]
+        print(f"  Pettitt: K={pt['statistic']:.0f} at index {pt['index']}  p={pt['p_value']:.3g}")
+        print(f"  verdict: {report['summary']}")
         return report
 
     if args.classify_demand:
