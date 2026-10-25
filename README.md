@@ -205,6 +205,33 @@ nonlinearity_report(resid)["verdict"]
   split and runs all three tests on its residuals. The related options are
   `--bds-max-dim` and `--bds-permutations`.
 
+## Trend magnitude, seasonal Kendall and change points (Sen, Hirsch-Slack, Pettitt)
+
+`mann_kendall_test` says whether a series trends. `ts_forecast.trend` adds
+how much, whether the trend survives a seasonal cycle, and where a level
+shift happened:
+
+```python
+from ts_forecast.trend import sens_slope, seasonal_mann_kendall_test, pettitt_test, trend_report
+
+sens_slope(values)["slope"], sens_slope(values)["ci_low"]   # Theil-Sen + Gilbert (1987) CI
+seasonal_mann_kendall_test(values, period=12)["p_value"]     # Hirsch, Slack & Smith (1982)
+pettitt_test(values)["index"]                                # Pettitt (1979) change point
+trend_report(values, period=12)["summary"]
+```
+
+- `sens_slope` is the median pairwise slope. Its slope, intercept and
+  confidence bounds match `scipy.stats.theilslopes`, including with ties.
+- `seasonal_mann_kendall_test` pools Mann-Kendall `S` and its tie-corrected
+  variance across seasons and returns the seasonal Sen slope per cycle and
+  per step. `NaN` gaps are dropped season by season. Its results match
+  `pymannkendall.seasonal_test`.
+- `pettitt_test` computes `U_t` from mid-ranks, which is exact with ties.
+  It reports `K = max|U_t|`, the approximate p-value
+  `2 exp(-6K^2/(n^3+n^2))`, and the median shift.
+- On the CLI, `--trend-test` runs all of these on the training split.
+  Use `--trend-period` to add the seasonal Kendall test.
+
 ## Demand classification (SBC) and IMAPA
 
 `classify_demand` places a series in one of the Syntetos-Boylan-Croston
