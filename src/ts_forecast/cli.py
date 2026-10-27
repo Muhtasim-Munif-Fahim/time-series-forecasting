@@ -78,6 +78,7 @@ def build_parser():
             "imapa",
             "local_level",
             "local_linear_trend",
+            "ssa",
         ),
         help="Forecast model. Holt-Winters is ETS; seasonal_naive_drift "
         "blends seasonal-naive with random-walk-with-drift; sarima is the "
@@ -88,7 +89,8 @@ def build_parser():
         "them back over the periods; imapa averages ADIDA over every "
         "aggregation level from 1 to the mean inter-demand interval; "
         "local_level and local_linear_trend are Kalman-filter structural "
-        "models with MLE variances and exact Gaussian intervals.",
+        "models with MLE variances and exact Gaussian intervals; ssa is a "
+        "Singular Spectrum Analysis recurrent forecast.",
     )
     parser.add_argument(
         "--seasonal-period",
@@ -186,6 +188,18 @@ def build_parser():
         default="mean",
         choices=("mean", "median"),
         help="How IMAPA combines the per-level forecasts",
+    )
+    parser.add_argument(
+        "--ssa-window",
+        type=int,
+        default=None,
+        help="SSA embedding window L (default: half the training length)",
+    )
+    parser.add_argument(
+        "--ssa-rank",
+        type=int,
+        default=None,
+        help="SSA signal components kept (default: smallest rank explaining 90%% of sum s^2)",
     )
     parser.add_argument(
         "--interval-coverage",
@@ -391,6 +405,17 @@ def run_cli(args):
             n_harmonics=getattr(args, "n_harmonics", 3) or 3,
         )
         title = "Fourier regression forecast metrics"
+    elif args.model == "ssa":
+        from .ssa import ssa_forecast
+
+        forecast = ssa_forecast(
+            train,
+            args.target,
+            steps=steps,
+            window=args.ssa_window,
+            rank=args.ssa_rank,
+        )
+        title = "SSA recurrent forecast metrics"
     elif args.model == "holt_winters":
         forecast = holt_winters_forecast(
             train,

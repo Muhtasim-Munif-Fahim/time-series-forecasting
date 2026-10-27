@@ -366,3 +366,33 @@ band["forecast"], band["lower"], band["upper"]
 python -m ts_forecast.cli data.csv --target value --model local_linear_trend \
   --steps 14 --interval-coverage 0.9
 ```
+
+## Singular Spectrum Analysis (SSA)
+
+`ts_forecast.ssa` provides non-parametric SSA (Golyandina et al., 2001). The
+series is embedded in an `L x K` Hankel trajectory matrix and decomposed by
+SVD. Each eigentriple is mapped back to a series by diagonal averaging, and
+the elementary series add up exactly to the original. Components that belong
+together, such as the sine/cosine pair of a seasonal cycle, show up as blocks
+in the **w-correlation** matrix. `ssa_forecast` uses recurrent (R-)forecasting.
+The leading `rank` eigenvectors give a linear recurrence of order `L - 1`,
+which continues the reconstructed signal. For finite-rank signals, such as a
+linear trend plus a sine wave at rank 4, the continuation is exact.
+
+```python
+from ts_forecast.ssa import ssa_decompose, ssa_forecast
+
+d = ssa_decompose(values, window=48, n_components=6,
+                  groups={"trend": [0], "season": [1, 2]})
+d["contribution"], d["w_correlation"], d["groups"]["season"]
+forecast = ssa_forecast(train, "value", steps=24, window=48, rank=4)
+```
+
+```bash
+python -m ts_forecast.cli data.csv --target value --model ssa \
+  --steps 14 --ssa-window 56 --ssa-rank 4
+```
+
+If `--ssa-rank` is omitted, the rank is the smallest one that explains 90% of
+`sum s^2`. A window that is a multiple of the season length separates
+seasonal pairs best.
