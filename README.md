@@ -112,6 +112,7 @@ python -m ts_forecast.cli data.csv --target value --model imapa --imapa-base aut
 python -m ts_forecast.cli data.csv --target value --classify-demand
 python -m ts_forecast.cli data.csv --target value --detect-seasonality
 python -m ts_forecast.cli data.csv --target value --random-walk-test --vr-periods 2 4 8
+python -m ts_forecast.cli data.csv --target value --cycle-filter hp --periods-per-year 12
 ```
 
 `--croston-alpha-size` and `--croston-alpha-interval` override the shared
@@ -396,3 +397,28 @@ python -m ts_forecast.cli data.csv --target value --model ssa \
 If `--ssa-rank` is omitted, the rank is the smallest one that explains 90% of
 `sum s^2`. A window that is a multiple of the season length separates
 seasonal pairs best.
+
+## Trend-cycle filters (Hodrick-Prescott, Baxter-King, Christiano-Fitzgerald, Hamilton)
+
+`ts_forecast.filters` splits a series into `trend + cycle` (numpy + scipy only):
+
+| Function | Method | Notes |
+| --- | --- | --- |
+| `hp_filter(x, lamb=1600)` | Hodrick-Prescott (1997) penalised trend | `O(n)` banded Cholesky solve of `(I + lambda D'D) tau = x`; `hp_lambda(f)` gives the Ravn-Uhlig rule `1600 (f/4)^4` |
+| `bk_filter(x, low=6, high=32, K=12)` | Baxter-King (1999) symmetric band-pass | zero-sum weights; the first and last `K` values are `nan` |
+| `cf_filter(x, low=6, high=32, drift=True)` | Christiano-Fitzgerald (2003) asymmetric random-walk band-pass | keeps every observation; `trend` includes the removed drift line |
+| `hamilton_filter(x, h=8, p=4)` | Hamilton (2018) regression filter | cycle = OLS residual of `x_{t+h}` on `1, x_t..x_{t-p+1}` |
+
+`cycle_summary(cycle)` reports the cycle's standard deviation, range, peaks and troughs. The HP, BK and CF cycles match `statsmodels.tsa.filters` to floating-point precision; the tests check this.
+
+```python
+from ts_forecast.filters import hp_filter, cf_filter, hp_lambda
+hp = hp_filter(y, lamb=hp_lambda(12))      # monthly data, lambda = 129600
+bc = cf_filter(y, low=18, high=96)         # monthly business-cycle band (1.5-8 years)
+```
+
+```bash
+python -m ts_forecast.cli gdp.csv --target value --cycle-filter hamilton --hamilton-h 8 --hamilton-p 4
+python -m ts_forecast.cli gdp.csv --target value --cycle-filter bk --cycle-low 6 --cycle-high 32 --bk-k 12
+```
+
