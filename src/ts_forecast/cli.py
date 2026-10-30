@@ -2,6 +2,8 @@
 
 import argparse
 
+import numpy as np
+
 from ts_forecast.diagnostics import (
     detect_seasonal_periods,
     detrended_fluctuation_analysis,
@@ -268,6 +270,32 @@ def build_parser():
         help="Season length for the seasonal Kendall test in --trend-test (omit for none)",
     )
     parser.add_argument(
+        "--cycle-filter",
+        choices=("hp", "bk", "cf", "hamilton"),
+        default=None,
+        help=(
+            "Split the training split into trend + cycle with a Hodrick-Prescott, "
+            "Baxter-King, Christiano-Fitzgerald or Hamilton filter, print a cycle summary and exit"
+        ),
+    )
+    parser.add_argument(
+        "--hp-lambda",
+        type=float,
+        default=None,
+        help="HP smoothing parameter (default: Ravn-Uhlig rule from --periods-per-year)",
+    )
+    parser.add_argument(
+        "--periods-per-year",
+        type=float,
+        default=4,
+        help="Observations per year for the Ravn-Uhlig HP lambda (default: 4, quarterly)",
+    )
+    parser.add_argument("--cycle-low", type=float, default=6, help="Shortest cycle period kept by bk/cf")
+    parser.add_argument("--cycle-high", type=float, default=32, help="Longest cycle period kept by bk/cf")
+    parser.add_argument("--bk-k", type=int, default=12, help="Baxter-King truncation lag K")
+    parser.add_argument("--hamilton-h", type=int, default=8, help="Hamilton filter horizon h")
+    parser.add_argument("--hamilton-p", type=int, default=4, help="Hamilton filter lags p")
+    parser.add_argument(
         "--classify-demand",
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
@@ -295,6 +323,41 @@ def run_cli(args):
             )
         print(f"  suggested --seasonal-period: {report['primary_period']}")
         return report
+
+    if args.cycle_filter:
+        from ts_forecast.filters import (
+            bk_filter,
+            cf_filter,
+            cycle_summary,
+            hamilton_filter,
+            hp_filter,
+            hp_lambda,
+        )
+
+        values = train[args.target].to_numpy(dtype=float)
+        if args.cycle_filter == "hp":
+            lamb = args.hp_lambda if args.hp_lambda is not None else hp_lambda(args.periods_per_year)
+            result = hp_filter(values, lamb=lamb)
+            label = f"Hodrick-Prescott (lambda={lamb:g})"
+        elif args.cycle_filter == "bk":
+            result = bk_filter(values, low=args.cycle_low, high=args.cycle_high, K=args.bk_k)
+            label = f"Baxter-King (periods {args.cycle_low:g}-{args.cycle_high:g}, K={args.bk_k})"
+        elif args.cycle_filter == "cf":
+            result = cf_filter(values, low=args.cycle_low, high=args.cycle_high)
+            label = f"Christiano-Fitzgerald (periods {args.cycle_low:g}-{args.cycle_high:g})"
+        else:
+            result = hamilton_filter(values, h=args.hamilton_h, p=args.hamilton_p)
+            label = f"Hamilton regression filter (h={args.hamilton_h}, p={args.hamilton_p})"
+        summary = cycle_summary(result["cycle"])
+        print(f"{label} on {values.size} training observations")
+        print(
+            f"  cycle: n={summary['n']}  std={summary['std']:.4f}  "
+            f"min={summary['min']:.4f}  max={summary['max']:.4f}"
+        )
+        print(f"  peaks: {len(summary['peaks'])}  troughs: {len(summary['troughs'])}")
+        last = np.flatnonzero(np.isfinite(result["cycle"]))[-1]
+        print(f"  latest trend={result['trend'][last]:.4f}  cycle={result['cycle'][last]:.4f}")
+        return {"filter": args.cycle_filter, "result": result, "summary": summary}
 
     if args.random_walk_test:
         values = train[args.target].values
