@@ -300,6 +300,23 @@ def build_parser():
         action="store_true",
         help="Print the Syntetos-Boylan-Croston demand class (ADI / CV^2) and exit",
     )
+    parser.add_argument(
+        "--garch",
+        action="store_true",
+        help="Fit a GARCH volatility model to the training split's returns, print parameters, "
+        "volatility forecasts and Value-at-Risk, and exit",
+    )
+    parser.add_argument(
+        "--garch-returns",
+        default="log",
+        choices=("log", "pct", "none"),
+        help="Turn the target into log returns, percentage returns, or use it as is (already returns)",
+    )
+    parser.add_argument("--garch-p", type=int, default=1, help="GARCH (lagged variance) order")
+    parser.add_argument("--garch-q", type=int, default=1, help="ARCH (lagged squared shock) order")
+    parser.add_argument("--garch-asymmetric", action="store_true", help="GJR leverage terms")
+    parser.add_argument("--garch-dist", default="normal", choices=("normal", "t"), help="Innovation distribution")
+    parser.add_argument("--var-level", type=float, default=0.99, help="Value-at-Risk confidence level")
     return parser
 
 
@@ -323,6 +340,43 @@ def run_cli(args):
             )
         print(f"  suggested --seasonal-period: {report['primary_period']}")
         return report
+
+    if args.garch:
+        from ts_forecast.volatility import fit_garch, garch_value_at_risk
+
+        values = train[args.target].to_numpy(dtype=float)
+        if args.garch_returns == "none":
+            returns = values
+        else:
+            if np.any(values <= 0):
+                raise SystemExit("--garch-returns log/pct needs a strictly positive target; use none")
+            returns = np.diff(np.log(values)) if args.garch_returns == "log" else np.diff(values) / values[:-1]
+        try:
+            fitted = fit_garch(
+                returns,
+                p=args.garch_p,
+                q=args.garch_q,
+                asymmetric=args.garch_asymmetric,
+                dist=args.garch_dist,
+            )
+            risk = garch_value_at_risk(fitted, steps=max(1, int(args.steps)), level=args.var_level)
+        except ValueError as exc:
+            raise SystemExit(f"garch: {exc}")
+        label = "GJR-GARCH" if args.garch_asymmetric else "GARCH"
+        print(f"{label}({args.garch_p},{args.garch_q}) {args.garch_dist} on {returns.size} {args.garch_returns} returns")
+        for name, value in fitted["params"].items():
+            print(f"  {name:<10} {value: .6g}  (se {fitted['std_errors'][name]:.3g})")
+        print(
+            f"  loglik={fitted['loglik']:.3f}  AIC={fitted['aic']:.3f}  "
+            f"persistence={fitted['persistence']:.4f}  half-life={fitted['half_life']:.1f}"
+        )
+        print(f"  {'h':>3} {'volatility':>12} {'VaR':>12} {'ES':>12}  (level {args.var_level:g})")
+        for h in range(risk["volatility"].size):
+            print(
+                f"  {h + 1:>3} {risk['volatility'][h]:>12.6g} "
+                f"{risk['value_at_risk'][h]:>12.6g} {risk['expected_shortfall'][h]:>12.6g}"
+            )
+        return {"fitted": fitted, "risk": risk}
 
     if args.cycle_filter:
         from ts_forecast.filters import (
