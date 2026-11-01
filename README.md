@@ -206,6 +206,36 @@ nonlinearity_report(resid)["verdict"]
   split and runs all three tests on its residuals. The related options are
   `--bds-max-dim` and `--bds-permutations`.
 
+## GARCH / GJR-GARCH volatility, VaR and expected shortfall
+
+When `arch_lm_test` detects volatility clustering, `ts_forecast.volatility`
+can model it. `fit_garch` fits GARCH(p, q) (Bollerslev 1986), or GJR-GARCH
+with leverage terms when `asymmetric=True` (Glosten, Jagannathan & Runkle
+1993), by maximum likelihood under stationarity constraints. Innovations can
+be normal or standardized Student-t.
+
+```python
+from ts_forecast.volatility import fit_garch, garch_forecast, garch_value_at_risk, simulate_garch
+
+r = simulate_garch(3000, omega=0.05, alpha=0.08, beta=0.9, seed=0)["returns"]
+fit = fit_garch(r, asymmetric=False, dist="normal")
+fit["params"], fit["std_errors"], fit["persistence"], fit["half_life"]
+garch_forecast(fit, steps=10)["volatility"]          # mean-reverts to sqrt(unconditional variance)
+garch_value_at_risk(fit, steps=1, level=0.99)        # one-period VaR and expected shortfall
+```
+
+- The series is rescaled internally, so raw daily returns (around 1e-2)
+  optimise as reliably as percentage returns. Standard errors come from a
+  numerical Hessian.
+- Multi-step forecasts replace future `eps^2` with `sigma^2`, and
+  `1[eps<0] eps^2` with `sigma^2/2`. `cumulative_variance` is the variance
+  of the summed `h`-period return.
+- CLI: `--garch` fits the model to the training split's log returns (choose
+  with `--garch-returns log|pct|none`). It prints the parameters and a
+  volatility / VaR / ES table for `--steps` horizons. Further options:
+  `--garch-p`, `--garch-q`, `--garch-asymmetric`, `--garch-dist t` and
+  `--var-level`.
+
 ## Trend magnitude, seasonal Kendall and change points (Sen, Hirsch-Slack, Pettitt)
 
 `mann_kendall_test` says whether a series trends. `ts_forecast.trend` adds
