@@ -452,3 +452,17 @@ python -m ts_forecast.cli gdp.csv --target value --cycle-filter hamilton --hamil
 python -m ts_forecast.cli gdp.csv --target value --cycle-filter bk --cycle-low 6 --cycle-high 32 --bk-k 12
 ```
 
+## Cointegration (Engle-Granger) and error-correction models
+
+`engle_granger(y, x)` runs the two-step Engle-Granger test: OLS long-run regression, then an ADF test (AIC/BIC lag selection) on the residuals with MacKinnon response-surface p-values and critical values. Its statistic and p-value match `statsmodels.tsa.stattools.coint`. `error_correction_model(y, x, lags=p)` fits the short-run ECM `dy_t = c + alpha*u_{t-1} + sum b_j dx_{t-j} + sum g_j dy_{t-j}` and reports the speed of adjustment `alpha` with its half-life, while `ecm_forecast(model, x_future)` forecasts `y` for a given path of `x`.
+
+```python
+from ts_forecast.cointegration import engle_granger, error_correction_model, ecm_forecast
+
+eg = engle_granger(spot, futures, trend="c")
+eg["statistic"], eg["p_value"], eg["cointegrated"], eg["long_run"]
+
+ecm = error_correction_model(spot, futures, lags=1)
+ecm["speed_of_adjustment"], ecm["half_life"]      # e.g. -0.5, ~1 period
+ecm_forecast(ecm, futures_path)                    # spot forecasts
+```
