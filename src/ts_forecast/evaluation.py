@@ -1919,6 +1919,65 @@ def interval_score(y_true, lower, upper, coverage=0.9):
     return {"score": float(np.mean(scores)), "scores": scores, "coverage": float(coverage)}
 
 
+def mean_scaled_interval_score(
+    y_true,
+    lower,
+    upper,
+    y_train,
+    coverage=0.9,
+    seasonal_period=1,
+):
+    """Mean Scaled Interval Score (MSIS) used in the M4 competition.
+
+    MSIS divides the Winkler / interval score by the mean absolute seasonal
+    naive error on the training series, the same scale used by MASE:
+
+        scale = mean(|y_t - y_{t-m}|) on the training window
+        MSIS  = mean(interval_score_i) / scale
+
+    Lower is better. When the seasonal-naive scale is zero (constant training
+    series) the score is omitted and ``None`` is returned for ``msis``.
+    """
+    observed = np.asarray(y_true, dtype=float).ravel()
+    low = np.asarray(lower, dtype=float).ravel()
+    high = np.asarray(upper, dtype=float).ravel()
+    train = np.asarray(y_train, dtype=float).ravel()
+    if not (observed.shape == low.shape == high.shape) or observed.size == 0:
+        raise ValueError("y_true, lower, and upper must be non-empty and equally sized")
+    if train.size < seasonal_period + 1:
+        raise ValueError("y_train must be longer than seasonal_period")
+    if seasonal_period < 1:
+        raise ValueError("seasonal_period must be >= 1")
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("coverage must be strictly between 0 and 1")
+    if not np.all(np.isfinite(np.concatenate([observed, low, high, train]))):
+        raise ValueError("inputs must contain only finite values")
+    if np.any(low > high):
+        raise ValueError("each lower bound must not exceed its upper bound")
+
+    detail = interval_score(observed, low, high, coverage=coverage)
+    diffs = np.abs(train[seasonal_period:] - train[:-seasonal_period])
+    scale = float(np.mean(diffs))
+    if scale == 0.0 or not np.isfinite(scale):
+        return {
+            "msis": None,
+            "interval_score": detail["score"],
+            "scale": scale,
+            "coverage": float(coverage),
+            "seasonal_period": int(seasonal_period),
+            "scores": detail["scores"],
+        }
+    msis = float(detail["score"] / scale)
+    return {
+        "msis": msis,
+        "interval_score": detail["score"],
+        "scale": scale,
+        "coverage": float(coverage),
+        "seasonal_period": int(seasonal_period),
+        "scores": detail["scores"] / scale,
+    }
+
+
 def acf_pacf(values, n_lags=40, alpha=0.05):
     """Compute the sample autocorrelation (ACF) and partial autocorrelation (PACF).
 
