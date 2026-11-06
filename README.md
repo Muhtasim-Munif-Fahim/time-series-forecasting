@@ -466,3 +466,18 @@ ecm = error_correction_model(spot, futures, lags=1)
 ecm["speed_of_adjustment"], ecm["half_life"]      # e.g. -0.5, ~1 period
 ecm_forecast(ecm, futures_path)                    # spot forecasts
 ```
+
+## Mean Scaled Interval Score (MSIS)
+
+Score prediction intervals the M4 way: Winkler / interval score scaled by the
+seasonal-naive MAE on the training series (same denominator as MASE):
+
+```python
+from ts_forecast.evaluation import mean_scaled_interval_score
+
+result = mean_scaled_interval_score(
+    y_true, lower, upper, y_train, coverage=0.95, seasonal_period=12
+)
+result["msis"], result["interval_score"], result["scale"]
+```
+
