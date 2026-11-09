@@ -481,3 +481,19 @@ result = mean_scaled_interval_score(
 result["msis"], result["interval_score"], result["scale"]
 ```
 
+
+## Model Confidence Set (Hansen-Lunde-Nason)
+
+Pick the set of forecasting models that contains the best one at a given
+confidence level instead of testing pairs one by one. Losses are compared with
+a moving-block bootstrap (robust to autocorrelated loss differentials) using
+either the `T_max` or the range `T_R` statistic; every model gets an MCS p-value.
+
+```python
+from ts_forecast.mcs import forecast_losses, model_confidence_set
+
+losses = forecast_losses(y_test, {"naive": f1, "ets": f2, "arima": f3}, loss="squared")
+mcs = model_confidence_set(losses, alpha=0.10, statistic="max", n_boot=1000, seed=0)
+mcs["included"], mcs["pvalues"]
+mcs["table"]          # elimination order, mean loss, MCS p-value, in_mcs
+```
