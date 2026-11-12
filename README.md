@@ -497,3 +497,26 @@ mcs = model_confidence_set(losses, alpha=0.10, statistic="max", n_boot=1000, see
 mcs["included"], mcs["pvalues"]
 mcs["table"]          # elimination order, mean loss, MCS p-value, in_mcs
 ```
+
+## Forecast rationality, encompassing and directional tests
+
+Check whether a forecast is unbiased/efficient (Mincer-Zarnowitz regression with
+a joint `a = 0, b = 1` HAC Wald test), whether one forecast already contains all
+the information in another (Harvey-Leybourne-Newbold encompassing test, with the
+optimal combination weight), and whether a forecast calls signs better than
+chance (Pesaran-Timmermann).
+
+```python
+from ts_forecast.rationality import (
+    forecast_encompassing_test, mincer_zarnowitz_test, pesaran_timmermann_test,
+)
+
+mz = mincer_zarnowitz_test(y_test, f_arima, max_lag=h - 1)
+mz["intercept"], mz["slope"], mz["p_value"], mz["rational"]
+
+enc = forecast_encompassing_test(y_test, f_arima, f_ets, max_lag=h - 1)
+enc["a_encompasses_b"], enc["combination_weight_b"], enc["mse_combination"]
+
+pt = pesaran_timmermann_test(y_test, f_arima, changes=True)
+pt["hit_rate"], pt["expected_hit_rate"], pt["p_value"]
+```
